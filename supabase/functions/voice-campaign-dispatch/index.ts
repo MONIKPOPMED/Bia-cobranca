@@ -12,6 +12,7 @@
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.74.0";
 import { loggerFor } from "../_shared/logger.ts";
 import { toE164 } from "../_shared/twilio/index.ts";
+import { resolveCredentialsForAccount } from "../_shared/elevenlabs/client.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -314,8 +315,7 @@ async function dispatchOne(admin: SupabaseClient, row: any, log: any) {
     .single();
   const voiceCallId = vc?.id;
 
-  const elKey = Deno.env.get("ELEVENLABS_API_KEY") ?? "";
-  if (!elKey) throw new Error("ELEVENLABS_API_KEY not configured");
+  const elKey = (await resolveCredentialsForAccount(admin, row.account_id)).apiKey;
 
   // Call variables (template vars) flow as dynamic_variables → agent can
   // reference them via {{var_name}} in system_prompt, first_message, tools.

@@ -6,6 +6,7 @@
 // from voice_calls and fetch /v1/convai/conversations/{id}/audio.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.74.0";
+import { resolveCredentialsForAccount } from "../_shared/elevenlabs/client.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -53,8 +54,12 @@ Deno.serve(async (req) => {
   const convId = call.source_id as string | null;
   if (!convId) return j({ error: "no recording available (ElevenLabs conversation_id missing)" }, 404);
 
-  const elKey = Deno.env.get("ELEVENLABS_API_KEY") ?? "";
-  if (!elKey) return j({ error: "ELEVENLABS_API_KEY missing" }, 500);
+  let elKey: string;
+  try {
+    elKey = (await resolveCredentialsForAccount(admin, call.account_id)).apiKey;
+  } catch (e) {
+    return j({ error: e instanceof Error ? e.message : String(e) }, 503);
+  }
 
   const upstream = await fetch(
     `https://api.elevenlabs.io/v1/convai/conversations/${encodeURIComponent(convId)}/audio`,

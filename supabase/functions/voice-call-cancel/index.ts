@@ -10,6 +10,7 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.74.0";
 import { loadAccountTwilioCreds, twilioRequest } from "../_shared/twilio/index.ts";
+import { resolveCredentialsForAccount } from "../_shared/elevenlabs/client.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -82,7 +83,7 @@ Deno.serve(async (req) => {
     if (!member) return j({ ok: false, error: "forbidden" }, 403);
   }
 
-  const EL_KEY = Deno.env.get("ELEVENLABS_API_KEY");
+  const elKeyByAccount = new Map<string, string | null>();
   const twilioCredsByAccount = new Map<string, Awaited<ReturnType<typeof loadAccountTwilioCreds>>>();
 
   let canceled = 0;
@@ -110,12 +111,21 @@ Deno.serve(async (req) => {
 
     // 2. ElevenLabs cancel (best-effort)
     const elConvId = call.source_id ?? (call.metadata as any)?.elevenlabs_conversation_id;
-    if (elConvId && EL_KEY) {
+    if (elConvId) {
       try {
-        await fetch(`https://api.elevenlabs.io/v1/convai/conversations/${elConvId}`, {
-          method: "DELETE",
-          headers: { "xi-api-key": EL_KEY },
-        });
+        if (!elKeyByAccount.has(call.account_id)) {
+          const key = await resolveCredentialsForAccount(admin, call.account_id)
+            .then((c) => c.apiKey)
+            .catch(() => null);
+          elKeyByAccount.set(call.account_id, key);
+        }
+        const elKey = elKeyByAccount.get(call.account_id);
+        if (elKey) {
+          await fetch(`https://api.elevenlabs.io/v1/convai/conversations/${elConvId}`, {
+            method: "DELETE",
+            headers: { "xi-api-key": elKey },
+          });
+        }
       } catch {
         // best-effort
       }

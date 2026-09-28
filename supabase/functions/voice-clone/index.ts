@@ -1,6 +1,7 @@
 // Instant Voice Clone via ElevenLabs — gated por feature flag voice_clone_enabled
 // Body: { personaId, audioBase64, filename, mimeType }
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.4";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.74.0";
+import { resolveCredentialsForAccount } from "../_shared/elevenlabs/client.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -33,7 +34,6 @@ Deno.serve(async (req) => {
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const anonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
     const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-    const elevenKey = Deno.env.get("ELEVENLABS_API_KEY");
 
     const userClient = createClient(supabaseUrl, anonKey, { global: { headers: { Authorization: authHeader } } });
     const { data: { user }, error: userErr } = await userClient.auth.getUser();
@@ -84,10 +84,13 @@ Deno.serve(async (req) => {
       }), { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
+    const elevenKey = await resolveCredentialsForAccount(supabase, persona.account_id)
+      .then((c) => c.apiKey)
+      .catch(() => null);
     if (!elevenKey) {
       return new Response(JSON.stringify({
         error: "elevenlabs_not_configured",
-        message: "Configure o secret ELEVENLABS_API_KEY para clonar vozes.",
+        message: "Configure a chave da ElevenLabs da conta (Integrações) para clonar vozes.",
       }), { status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
