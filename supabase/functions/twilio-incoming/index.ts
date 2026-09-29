@@ -8,6 +8,7 @@ import {
 } from "../_shared/webhook-security.ts";
 import { resolveWebhookAuthTokens } from "../_shared/twilio/config.ts";
 import { resolveCredentialsForAccount } from "../_shared/elevenlabs/client.ts";
+import { buildCallDynamicVariables } from "../_shared/voice/call-variables.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -42,6 +43,7 @@ async function resolveElAgentId(
 async function buildElTwiML(
   supabase: any,
   accountId: string,
+  personaId: string | null,
   elAgentId: string,
   from: string,
   to: string,
@@ -74,6 +76,13 @@ async function buildElTwiML(
     // Requires the agent's input/output audio format = ulaw_8000
     // (set by elevenlabs-agent-sync).
     const isOutbound = direction.startsWith("outbound");
+    // The customer's number: who we dialed (outbound) or who called us.
+    const customerPhone = isOutbound ? to : from;
+    const dynamicVariables = await buildCallDynamicVariables(supabase, {
+      accountId,
+      personaId,
+      customerPhone,
+    });
     const registerRes = await fetch("https://api.elevenlabs.io/v1/convai/twilio/register-call", {
       method: "POST",
       headers: { "xi-api-key": apiKey, "Content-Type": "application/json" },
@@ -84,10 +93,10 @@ async function buildElTwiML(
         direction: isOutbound ? "outbound" : "inbound",
         conversation_initiation_client_data: {
           dynamic_variables: {
+            ...dynamicVariables,
             call_id: callId,
             call_sid: callSid,
-            // The customer's number: who we dialed (outbound) or who called us.
-            caller_id: isOutbound ? to : from,
+            caller_id: customerPhone,
           },
         },
       }),
@@ -341,6 +350,7 @@ Deno.serve(async (req) => {
           twiml = await buildElTwiML(
             supabase,
             phoneNumber.account_id,
+            phoneNumber.pinned_persona_id,
             elAgentId,
             from,
             to,
