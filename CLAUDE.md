@@ -1,4 +1,4 @@
-# cobrAI (nexus-ai-voice-memories)
+# cobrAI (Bia-cobranca)
 
 Agente de cobrança por voz e WhatsApp ("Bia") da POPMED. Tudo em português do Brasil.
 
@@ -14,7 +14,7 @@ Agente de cobrança por voz e WhatsApp ("Bia") da POPMED. Tudo em português do 
 
 ## Como publicar uma mudança
 
-1. Branch → PR → merge em `main` (GitHub `MONIKPOPMED/nexus-ai-voice-memories`, `gh` logado como MONIKPOPMED). Crie a branch a partir de um `main` atualizado: **o Lovable também commita direto em `main`** (`git pull` antes de começar).
+1. Branch → PR → merge em `main` (GitHub `MONIKPOPMED/Bia-cobranca`, antigo `nexus-ai-voice-memories`; `gh` logado como MONIKPOPMED). O merge é feito pela usuária no GitHub (o Claude Code bloqueia merge do próprio PR). Crie a branch a partir de um `main` atualizado: **o Lovable também commita direto em `main`** (`git pull` antes de começar).
 2. **Frontend**: o Lovable sincroniza e remonta a prévia sozinho. Para ir ao site público é preciso clicar em **Publish** no Lovable (publica tudo que estiver pendente).
 3. **Edge functions NÃO são publicadas automaticamente** a partir do GitHub. Peça no chat do projeto no Lovable, uma por vez ou em lista:
    > Faça o deploy da(s) edge function(s) `X` exatamente como está no código atual (veio do GitHub, PR #N). Não altere nenhum código, só publique no backend.
@@ -24,6 +24,7 @@ Agente de cobrança por voz e WhatsApp ("Bia") da POPMED. Tudo em português do 
 
 ## Verificação local
 
+- Prévia local: `npm run dev -- --port 8082 --strictPort` (a 8080 é da Eva; config `cobrai-dev` em `.claude/launch.json`).
 - Dependências: `npx bun@1 install --frozen-lockfile` (o `bun.lock` manda; o `package-lock.json` está desatualizado).
 - Typecheck do app: `npx -p typescript@5 tsc --noEmit -p tsconfig.json`. Build: `npm run build` (regenera `src/routeTree.gen.ts` — descarte se só mudou fim de linha).
 - Edge functions: `npx deno@2 check --no-lock supabase/functions/<fn>/index.ts`.
@@ -60,4 +61,4 @@ Agente de cobrança por voz e WhatsApp ("Bia") da POPMED. Tudo em português do 
 - Várias chamadas recentes foram recusadas pela operadora em 0–4 s (possível filtro anti-spam do Caller ID).
 - Links de pagamento para mais de uma parcela e outros casos.
 - Contato/conversa duplicados criados em 24/09 (`ffaf06b6…` / `f13548e4…`) podem ser limpos.
-- Ainda usam só a chave global da ElevenLabs: `voice-campaign-dispatch`, `elevenlabs-call-audio`, `voice-call-cancel`, `voice-clone`.
+- PR #3 (rascunho do Codex, "Exibe erros da discagem no cartão do número") — decidir se aproveita ou fecha.
