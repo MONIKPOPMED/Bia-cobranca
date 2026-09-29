@@ -69,7 +69,10 @@ Deno.serve(async (req) => {
     return ok();
   }
 
-  const event = String(payload?.event ?? "").toUpperCase();
+  // Evolution v2 sends dotted lowercase names ("messages.upsert"); v1 and our
+  // lists use SCREAMING_SNAKE ("MESSAGES_UPSERT"). Normalize both, otherwise
+  // every inbound message was dropped as an "unknown event".
+  const event = String(payload?.event ?? "").toUpperCase().replace(/[.\-]/g, "_");
   const data = payload?.data ?? payload;
 
   // 1) Drop status/receipts and other non-message events entirely.
@@ -212,13 +215,38 @@ async function handleMessage(
   const baseJid = remoteJid.replace(/:\d+@/, "@").split("@")[0];
   const identifier = `evolution:whatsapp:${baseJid}`;
 
-  // Look up existing contact by identifier — DO NOT create duplicates.
-  let { data: contact } = await admin
-    .from("contacts")
-    .select("id")
-    .eq("account_id", accountId)
-    .eq("identifier", identifier)
-    .maybeSingle();
+  // Look up existing contact — DO NOT create duplicates. Prefer a contact
+  // whose phone matches (debtors are imported with a phone but no
+  // identifier), accounting for WhatsApp JIDs that drop the BR 9th digit
+  // (5548991667070 ↔ 554891667070). Otherwise the reply lands in a new,
+  // context-less conversation instead of the collection thread.
+  let contact: { id: string } | null = null;
+  const phones = phoneVariants(baseJid);
+  if (phones.length > 0) {
+    const { data: byPhone } = await admin
+      .from("contacts")
+      .select("id, identifier")
+      .eq("account_id", accountId)
+      .in("phone_number", phones)
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    if (byPhone) {
+      contact = { id: byPhone.id };
+      if (!byPhone.identifier) {
+        await admin.from("contacts").update({ identifier }).eq("id", byPhone.id);
+      }
+    }
+  }
+  if (!contact) {
+    const { data: byIdentifier } = await admin
+      .from("contacts")
+      .select("id")
+      .eq("account_id", accountId)
+      .eq("identifier", identifier)
+      .maybeSingle();
+    contact = byIdentifier;
+  }
   if (!contact) {
     const { data: created } = await admin
       .from("contacts")
@@ -262,35 +290,41 @@ async function handleMessage(
     conversation = created!;
   }
 
-  // Insert message; dedup by (account_id, source_id) — Evolution can retry
-  // the same webhook, and the WA messageId is globally unique.
-  const { data: inserted, error: insErr } = await admin
+  // Dedup by (account_id, source_id) — Evolution can retry the same webhook,
+  // and the WA messageId is globally unique. messages has no unique index on
+  // those columns, so upsert(onConflict) failed with 42P10 and every inbound
+  // message was silently dropped; check first, then insert.
+  const { data: existingMsg } = await admin
     .from("messages")
-    .upsert(
-      {
-        account_id: accountId,
-        conversation_id: conversation.id,
-        inbox_id: inbox.id,
-        content: text,
-        content_type: hasMedia ? 1 : 0,
-        message_type: 0,
-        private: false,
-        sender_type: "Contact",
-        sender_id: contact.id,
-        source_id: messageId,
-        external_source_ids: { evolution_message_id: messageId },
-        content_attributes: hasMedia ? { kind: "media" } : { kind: "text" },
-      },
-      { onConflict: "account_id,source_id", ignoreDuplicates: true },
-    )
     .select("id")
-    .single();
-  if (insErr && !/duplicate/i.test(insErr.message)) {
-    console.error("[evolution-incoming] insert failed", insErr.message);
+    .eq("account_id", accountId)
+    .eq("source_id", messageId)
+    .limit(1)
+    .maybeSingle();
+  if (existingMsg) {
+    // Duplicate — already processed. Don't re-fire the AI.
     return;
   }
-  if (!inserted) {
-    // Duplicate — already processed. Don't re-fire the AI.
+  const { data: inserted, error: insErr } = await admin
+    .from("messages")
+    .insert({
+      account_id: accountId,
+      conversation_id: conversation.id,
+      inbox_id: inbox.id,
+      content: text,
+      content_type: hasMedia ? 1 : 0,
+      message_type: 0,
+      private: false,
+      sender_type: "Contact",
+      sender_id: contact.id,
+      source_id: messageId,
+      external_source_ids: { evolution_message_id: messageId },
+      content_attributes: hasMedia ? { kind: "media" } : { kind: "text" },
+    })
+    .select("id")
+    .single();
+  if (insErr || !inserted) {
+    console.error("[evolution-incoming] insert failed", insErr?.message);
     return;
   }
 
@@ -322,4 +356,23 @@ async function handleMessage(
   } catch (err) {
     console.warn("[evolution-incoming] auto-reply invoke failed", err);
   }
+}
+
+/**
+ * Stored phone formats for a WhatsApp JID's digits: with/without "+", and —
+ * for Brazilian mobiles — with/without the 9th digit, since WhatsApp JIDs for
+ * older BR numbers omit it (554891667070) while debtors are imported with it
+ * (+5548991667070).
+ */
+export function phoneVariants(jidDigits: string): string[] {
+  const digits = jidDigits.replace(/\D/g, "");
+  if (digits.length < 10) return [];
+  const bases = new Set<string>([digits]);
+  if (digits.startsWith("55")) {
+    const ddd = digits.slice(2, 4);
+    const rest = digits.slice(4);
+    if (rest.length === 8) bases.add(`55${ddd}9${rest}`);
+    if (rest.length === 9 && rest.startsWith("9")) bases.add(`55${ddd}${rest.slice(1)}`);
+  }
+  return [...bases].flatMap((b) => [b, `+${b}`]);
 }

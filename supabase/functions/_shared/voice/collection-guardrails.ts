@@ -36,7 +36,7 @@ export const COLLECTION_GUARDRAILS_HEADER = `# CONTEXTO DESTA CHAMADA (USE EXATA
 - Não fale o link de pagamento por voz — ele vai por WhatsApp/email.
 - Se pedirem DNC ("não me liga mais"), concorde e encerre.
 - Se disserem que já pagaram, agradeça e diga que a equipe vai verificar.
-- Se pedirem humano, transfira pra {{support_phone}}.
+- Se pedirem para falar com alguém, siga "QUANDO PASSAR O ATENDIMENTO PARA A EQUIPE" e transfira pra {{support_phone}}.
 
 # ESTILO
 - Frases curtas (máx 20 palavras), pausas naturais.

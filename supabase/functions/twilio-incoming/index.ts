@@ -4,8 +4,10 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.4";
 import {
   getPublicUrl,
   isWebhookVerificationDisabled,
-  validateTwilioSignature,
+  validateTwilioSignatureAny,
 } from "../_shared/webhook-security.ts";
+import { resolveWebhookAuthTokens } from "../_shared/twilio/config.ts";
+import { resolveCredentialsForAccount } from "../_shared/elevenlabs/client.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -38,65 +40,78 @@ async function resolveElAgentId(
 }
 
 async function buildElTwiML(
+  supabase: any,
+  accountId: string,
   elAgentId: string,
   from: string,
-  _to: string,
+  to: string,
   direction: string,
   callId: string,
-  _callSid: string,
+  callSid: string,
 ): Promise<string> {
-  const apiKey = Deno.env.get("ELEVENLABS_API_KEY") ?? "";
-  if (!apiKey) {
-    console.warn("[twilio-incoming] ELEVENLABS_API_KEY not set");
+  // The persona's EL agent lives in the workspace's ElevenLabs account (vault
+  // key, same as elevenlabs-agent-sync) — the global env key may belong to a
+  // different EL account or be unset, which made get_signed_url fail and
+  // every AI call fall through to the voicemail prompt.
+  let apiKey = "";
+  try {
+    apiKey = (await resolveCredentialsForAccount(supabase, accountId)).apiKey;
+  } catch (err) {
+    console.warn("[twilio-incoming] ElevenLabs key not configured for account", accountId, err);
     return VOICEMAIL_TWIML;
   }
 
   try {
-    // EL's documented flow for Twilio Media Streams:
-    //   1. GET /v1/convai/conversation/get_signed_url?agent_id=X returns a
-    //      pre-authenticated WSS URL (signed, expires in ~30 min).
-    //   2. Embed that URL inside <Connect><Stream url="wss://..."/></Connect>.
-    //   3. Twilio opens the WS; EL authenticates via the signed URL (no
-    //      API key exposed to the client side).
-    const signedRes = await fetch(
-      `https://api.elevenlabs.io/v1/convai/conversation/get_signed_url?agent_id=${encodeURIComponent(elAgentId)}`,
-      { headers: { "xi-api-key": apiKey } },
-    );
-    if (!signedRes.ok) {
-      const txt = await signedRes.text().catch(() => "");
+    // EL's "Register Twilio calls" flow for calls on our own Twilio account:
+    // POST /v1/convai/twilio/register-call returns the TwiML that connects
+    // this call to the agent — we hand it to Twilio verbatim.
+    // https://elevenlabs.io/docs/eleven-agents/phone-numbers/twilio-integration/register-call
+    //
+    // Pointing <Connect><Stream> straight at a get_signed_url WSS doesn't
+    // work: that socket speaks EL's client protocol, not Twilio Media
+    // Streams, so EL closed it and the call hung up ~1s after answer.
+    //
+    // Requires the agent's input/output audio format = ulaw_8000
+    // (set by elevenlabs-agent-sync).
+    const isOutbound = direction.startsWith("outbound");
+    const registerRes = await fetch("https://api.elevenlabs.io/v1/convai/twilio/register-call", {
+      method: "POST",
+      headers: { "xi-api-key": apiKey, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        agent_id: elAgentId,
+        from_number: from,
+        to_number: to,
+        direction: isOutbound ? "outbound" : "inbound",
+        conversation_initiation_client_data: {
+          dynamic_variables: {
+            call_id: callId,
+            call_sid: callSid,
+            // The customer's number: who we dialed (outbound) or who called us.
+            caller_id: isOutbound ? to : from,
+          },
+        },
+      }),
+    });
+    // Documented as a string response: accept raw XML or a JSON-encoded string.
+    let twiml = await registerRes.text().catch(() => "");
+    if (twiml.trimStart().startsWith('"')) {
+      try {
+        twiml = JSON.parse(twiml);
+      } catch {
+        // leave as-is; the <Response check below rejects it
+      }
+    }
+    if (!registerRes.ok || !twiml.includes("<Response")) {
       console.error(
-        `[twilio-incoming] EL get_signed_url failed ${signedRes.status}: ${txt.slice(0, 300)}`,
-      );
-      return VOICEMAIL_TWIML;
-    }
-    const signed = await signedRes.json().catch(() => null);
-    const wssUrl: string | undefined = signed?.signed_url ?? signed?.url;
-    if (!wssUrl) {
-      console.warn(
-        `[twilio-incoming] EL get_signed_url shape unexpected: ${JSON.stringify(signed).slice(0, 200)}`,
+        `[twilio-incoming] EL register-call failed ${registerRes.status}: ${twiml.slice(0, 300)}`,
       );
       return VOICEMAIL_TWIML;
     }
 
-    // Use the signed URL VERBATIM — appending extra params invalidates the
-    // conversation_signature EL embeds in it and the WS closes right after
-    // Twilio connects (Twilio error 31921). Call metadata travels via
-    // <Parameter> tags inside <Stream>, which Twilio forwards on the
-    // "start" event.
     console.log(
-      `[twilio-incoming] EL signed URL obtained agent=${elAgentId} direction=${direction}`,
+      `[twilio-incoming] EL register-call ok agent=${elAgentId} direction=${direction}`,
     );
-
-    return `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Connect>
-    <Stream url="${escapeXml(wssUrl)}">
-      <Parameter name="agent_id" value="${escapeXml(elAgentId)}"/>
-      <Parameter name="call_id" value="${escapeXml(callId)}"/>
-      <Parameter name="caller_id" value="${escapeXml(from)}"/>
-    </Stream>
-  </Connect>
-</Response>`;
+    return twiml;
   } catch (err) {
     console.error("[twilio-incoming] EL buildTwiML exception", err);
     return VOICEMAIL_TWIML;
@@ -177,37 +192,37 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   try {
-    const authToken = Deno.env.get("TWILIO_AUTH_TOKEN") ?? "";
     const formData = await req.formData();
-
-    // HMAC: Twilio signs url + sorted POST params. The request arrives at
-    // our edge function via Supabase's proxy, where req.url has a different
-    // host than the URL Twilio was configured with. Try the reconstructed
-    // URL first, fall back to the canonical SUPABASE_URL-based one.
-    if (!isWebhookVerificationDisabled()) {
-      const signature = req.headers.get("x-twilio-signature");
-      const supabaseBase = (Deno.env.get("SUPABASE_URL") ?? "").replace(/\/$/, "");
-      const canonicalUrl = `${supabaseBase}/functions/v1/twilio-incoming`;
-      const candidates = [getPublicUrl(req), canonicalUrl];
-      let matched = false;
-      for (const url of candidates) {
-        const ok = await validateTwilioSignature({ url, form: formData, signature, authToken });
-        if (ok) {
-          matched = true;
-          break;
-        }
-      }
-      if (!matched) {
-        console.warn(
-          `[twilio-incoming] HMAC mismatch. tried=${candidates.join(",")} sig=${signature?.slice(0, 16)}…`,
-        );
-        return new Response("Forbidden", { status: 403, headers: corsHeaders });
-      }
-    }
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const supabase = createClient(supabaseUrl, serviceKey);
+
+    // HMAC: Twilio signs url + sorted POST params with the Auth Token of the
+    // account that placed/received the call (the workspace's vault creds,
+    // not necessarily the global env token). The request arrives at our edge
+    // function via Supabase's proxy, where req.url has a different host than
+    // the URL Twilio was configured with. Try the reconstructed URL first,
+    // fall back to the canonical SUPABASE_URL-based one.
+    if (!isWebhookVerificationDisabled()) {
+      const signature = req.headers.get("x-twilio-signature");
+      const supabaseBase = supabaseUrl.replace(/\/$/, "");
+      const canonicalUrl = `${supabaseBase}/functions/v1/twilio-incoming`;
+      const candidates = [getPublicUrl(req), canonicalUrl];
+      const authTokens = await resolveWebhookAuthTokens(supabase, formData);
+      const matched = await validateTwilioSignatureAny({
+        urls: candidates,
+        authTokens,
+        form: formData,
+        signature,
+      });
+      if (!matched) {
+        console.warn(
+          `[twilio-incoming] HMAC mismatch. tried=${candidates.join(",")} tokens=${authTokens.length} sig=${signature?.slice(0, 16)}…`,
+        );
+        return new Response("Forbidden", { status: 403, headers: corsHeaders });
+      }
+    }
 
     const callSid = formData.get("CallSid")?.toString() ?? "";
     const from = formData.get("From")?.toString() ?? "";
@@ -296,14 +311,32 @@ Deno.serve(async (req) => {
       }
     }
 
+    // inbound_behavior describes what happens when someone calls US. On an
+    // outbound-api call we dialed the customer to talk, so "voicemail" would
+    // play our own "deixe seu recado" prompt to them. Caller-ID-only numbers
+    // are always stored as voicemail (they never receive inbound), which made
+    // every outbound call from them hit the voicemail prompt.
+    const behavior = direction.startsWith("outbound") && phoneNumber.inbound_behavior === "voicemail"
+      ? "ai_answer"
+      : phoneNumber.inbound_behavior;
+
     let twiml: string;
-    switch (phoneNumber.inbound_behavior) {
+    switch (behavior) {
       case "ai_answer":
       case "suggest": {
         // Prefer ElevenLabs Conversational AI if the persona has a synced agent.
         const elAgentId = await resolveElAgentId(supabase, phoneNumber.pinned_persona_id);
         if (elAgentId) {
-          twiml = await buildElTwiML(elAgentId, from, to, direction, callId, callSid);
+          twiml = await buildElTwiML(
+            supabase,
+            phoneNumber.account_id,
+            elAgentId,
+            from,
+            to,
+            direction,
+            callId,
+            callSid,
+          );
         } else {
           // Fallback: ConversationRelay (Twilio-hosted STT+TTS).
           twiml = buildAiAnswerTwiML(callId, phoneNumber.pinned_persona_id, voiceId, welcomeGreeting);
@@ -319,7 +352,7 @@ Deno.serve(async (req) => {
         break;
     }
     console.log(
-      `[twilio-incoming] emitting TwiML (${phoneNumber.inbound_behavior}, voice=${voiceId}, callId=${callId}):\n${twiml.slice(0, 500)}`,
+      `[twilio-incoming] emitting TwiML (${behavior}, voice=${voiceId}, callId=${callId}):\n${twiml.slice(0, 500)}`,
     );
 
     return new Response(twiml, {

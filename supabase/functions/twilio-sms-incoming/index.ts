@@ -10,9 +10,10 @@ import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-
 import {
   getPublicUrl,
   isWebhookVerificationDisabled,
-  validateTwilioSignature,
+  validateTwilioSignatureAny,
 } from "../_shared/webhook-security.ts";
 import { findSmsChannelByToNumber } from "../_shared/twilio/index.ts";
+import { resolveWebhookAuthTokens } from "../_shared/twilio/config.ts";
 import { classifyOptKeyword } from "../_shared/twilio/sms.ts";
 
 const corsHeaders = {
@@ -27,22 +28,21 @@ Deno.serve(async (req) => {
   if (req.method !== "POST") return xml(405, `<?xml version="1.0"?><Response/>`);
 
   try {
-    const authToken = Deno.env.get("TWILIO_AUTH_TOKEN") ?? "";
     const formData = await req.formData();
-
-    if (!isWebhookVerificationDisabled()) {
-      const ok = await validateTwilioSignature({
-        url: getPublicUrl(req),
-        form: formData,
-        signature: req.headers.get("x-twilio-signature"),
-        authToken,
-      });
-      if (!ok) return xml(403, `<?xml version="1.0"?><Response/>`);
-    }
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const admin = createClient(supabaseUrl, serviceKey);
+
+    if (!isWebhookVerificationDisabled()) {
+      const ok = await validateTwilioSignatureAny({
+        urls: [getPublicUrl(req), `${supabaseUrl.replace(/\/$/, "")}/functions/v1/twilio-sms-incoming`],
+        authTokens: await resolveWebhookAuthTokens(admin, formData),
+        form: formData,
+        signature: req.headers.get("x-twilio-signature"),
+      });
+      if (!ok) return xml(403, `<?xml version="1.0"?><Response/>`);
+    }
 
     const messageSid = formData.get("MessageSid")?.toString() ?? "";
     const from = formData.get("From")?.toString() ?? "";

@@ -3,8 +3,9 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.4";
 import {
   getPublicUrl,
   isWebhookVerificationDisabled,
-  validateTwilioSignature,
+  validateTwilioSignatureAny,
 } from "../_shared/webhook-security.ts";
+import { resolveWebhookAuthTokens } from "../_shared/twilio/config.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -27,24 +28,23 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   try {
-    const authToken = Deno.env.get("TWILIO_AUTH_TOKEN") ?? "";
     const formData = await req.formData();
 
+    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+    const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+    const supabase = createClient(supabaseUrl, serviceKey);
+
     if (!isWebhookVerificationDisabled()) {
-      const ok = await validateTwilioSignature({
-        url: getPublicUrl(req),
+      const ok = await validateTwilioSignatureAny({
+        urls: [getPublicUrl(req), `${supabaseUrl.replace(/\/$/, "")}/functions/v1/twilio-status`],
+        authTokens: await resolveWebhookAuthTokens(supabase, formData),
         form: formData,
         signature: req.headers.get("x-twilio-signature"),
-        authToken,
       });
       if (!ok) {
         return new Response("Forbidden", { status: 403, headers: corsHeaders });
       }
     }
-
-    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-    const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-    const supabase = createClient(supabaseUrl, serviceKey);
 
     const callSid = formData.get("CallSid")?.toString() ?? "";
     const callStatus = formData.get("CallStatus")?.toString() ?? "";

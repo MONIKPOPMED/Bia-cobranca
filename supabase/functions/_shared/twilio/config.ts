@@ -141,6 +141,67 @@ export async function loadAccountTwilioCreds(
   return resolveTwilioCredentials(admin, accountId, {});
 }
 
+/**
+ * Auth Tokens to try when validating an inbound Twilio webhook signature.
+ *
+ * Twilio signs webhooks with the Auth Token of the account that owns the
+ * call/message. Since outbound calls moved to per-workspace vault creds,
+ * that is usually NOT the global TWILIO_AUTH_TOKEN — validating only against
+ * env made every webhook 403 ("An application error has occurred. Goodbye.").
+ *
+ * We find the workspace from the payload (CallSid → voice_calls, or one of
+ * our numbers in To/From → phone_numbers) and use its vault token when its
+ * Account SID matches the payload's AccountSid. The env token stays as a
+ * last fallback for legacy/global setups.
+ */
+export async function resolveWebhookAuthTokens(
+  // any: webhook functions pin different supabase-js versions whose client
+  // types don't unify (twilio-incoming/status use 2.49, shared code 2.74).
+  // deno-lint-ignore no-explicit-any
+  admin: any,
+  form: FormData,
+): Promise<string[]> {
+  const field = (k: string) => {
+    const v = form.get(k);
+    return typeof v === "string" && v ? v : null;
+  };
+  const payloadAccountSid = field("AccountSid");
+
+  const accountIds = new Set<string>();
+  const callSid = field("CallSid");
+  if (callSid) {
+    const { data } = await admin
+      .from("voice_calls")
+      .select("account_id")
+      .eq("provider_call_sid", callSid)
+      .limit(1)
+      .maybeSingle();
+    if (data?.account_id) accountIds.add(data.account_id);
+  }
+  // Status callbacks can arrive before provider_call_sid is saved, and
+  // inbound calls/SMS have no voice_calls row yet — fall back to our number.
+  const numbers = ["To", "From", "Called", "Caller"].map(field).filter((n): n is string => !!n);
+  if (accountIds.size === 0 && numbers.length > 0) {
+    const { data } = await admin.from("phone_numbers").select("account_id").in("e164", numbers).limit(5);
+    for (const row of data ?? []) if (row.account_id) accountIds.add(row.account_id);
+  }
+
+  const tokens: string[] = [];
+  for (const accountId of accountIds) {
+    try {
+      const creds = await loadAccountTwilioCreds(admin, accountId);
+      if (!creds.authToken) continue; // API key only — can't validate signatures with it
+      if (payloadAccountSid && payloadAccountSid !== creds.accountSid) continue;
+      if (!tokens.includes(creds.authToken)) tokens.push(creds.authToken);
+    } catch {
+      // No Twilio creds for this workspace — the env fallback below still applies.
+    }
+  }
+  const envToken = Deno.env.get("TWILIO_AUTH_TOKEN");
+  if (envToken && !tokens.includes(envToken)) tokens.push(envToken);
+  return tokens;
+}
+
 async function resolveTwilioCredentials(
   admin: SupabaseClient,
   accountId: string,

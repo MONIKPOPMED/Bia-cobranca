@@ -7,6 +7,7 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.74.0";
 import { sendText } from "../_shared/evolution/index.ts";
+import { HANDOFF_RULE } from "../_shared/handoff.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -127,7 +128,11 @@ Deno.serve(async (req) => {
       .maybeSingle();
     if (persona?.system_prompt) systemPrompt = persona.system_prompt;
   }
-  systemPrompt = `${systemPrompt}\n\n${SYSTEM_PROMPT_GUARDRAILS}`;
+  systemPrompt = `${systemPrompt}\n\n${SYSTEM_PROMPT_GUARDRAILS}\n\n${HANDOFF_RULE}`;
+  // Without this the agent had no access to the debt and answered
+  // "não tenho acesso ao valor em aberto" even for imported debtors.
+  const debtContext = await loadDebtContext(admin, accountId, conversationId);
+  if (debtContext) systemPrompt = `${systemPrompt}\n\n${debtContext}`;
 
   // 5) Load short history (oldest → newest).
   const { data: recent } = await admin
@@ -278,3 +283,70 @@ Deno.serve(async (req) => {
 
   return j({ ok: true, messageId: inserted.id });
 });
+
+const brl = (n: number) =>
+  n.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+const brDate = (iso: string | null) => {
+  if (!iso) return "sem vencimento";
+  const [y, m, d] = iso.slice(0, 10).split("-");
+  return `${d}/${m}/${y}`;
+};
+
+/**
+ * Real collection data for the conversation's contact: open debts plus the
+ * company's negotiation limits (same sources the WhatsApp campaign uses for
+ * the opening message). Returned as an instructions block; null when the
+ * conversation has no contact.
+ */
+export async function loadDebtContext(
+  // deno-lint-ignore no-explicit-any
+  admin: any,
+  accountId: string,
+  conversationId: string,
+): Promise<string | null> {
+  const { data: conv } = await admin
+    .from("conversations")
+    .select("contact_id")
+    .eq("id", conversationId)
+    .maybeSingle();
+  if (!conv?.contact_id) return null;
+
+  const [{ data: contact }, { data: debts }, { data: settings }] = await Promise.all([
+    admin.from("contacts").select("name").eq("id", conv.contact_id).maybeSingle(),
+    admin
+      .from("debts")
+      .select("valor_atual, vencimento, descricao, origem")
+      .eq("account_id", accountId)
+      .eq("contact_id", conv.contact_id)
+      .in("status", ["aberto", "em_negociacao"])
+      .order("vencimento", { ascending: true })
+      .limit(20),
+    admin
+      .from("company_settings")
+      .select("company_name, default_discount_pct, default_max_installments")
+      .eq("account_id", accountId)
+      .maybeSingle(),
+  ]);
+
+  const lines = [
+    "DADOS DA COBRANÇA (fonte: cadastro do sistema — use SOMENTE estes dados, nunca invente valores, datas ou condições):",
+    `- Cliente: ${contact?.name ?? "não informado"}`,
+    `- Empresa credora: ${settings?.company_name ?? "não informada"}`,
+  ];
+  const open = (debts ?? []) as Array<{ valor_atual: number | null; vencimento: string | null; descricao: string | null; origem: string | null }>;
+  if (open.length === 0) {
+    lines.push("- Não há dívida em aberto registrada para este cliente. Não cite valores; ofereça passar o atendimento para a equipe (siga as regras de QUANDO PASSAR O ATENDIMENTO).");
+  } else {
+    const total = open.reduce((sum, d) => sum + Number(d.valor_atual ?? 0), 0);
+    lines.push(`- Dívidas em aberto: ${open.length} (total ${brl(total)})`);
+    for (const d of open) {
+      const desc = d.descricao || d.origem;
+      lines.push(`  • ${brl(Number(d.valor_atual ?? 0))}, vencimento ${brDate(d.vencimento)}${desc ? ` — ${desc}` : ""}`);
+    }
+    lines.push(
+      `- Desconto máximo à vista: ${settings?.default_discount_pct ?? 0}%. Parcelamento máximo: ${settings?.default_max_installments ?? 1}x. Não ofereça nada além desses limites.`,
+      "- Depois que o cliente confirmar a identidade, informe o valor em aberto e as opções de pagamento.",
+    );
+  }
+  return lines.join("\n");
+}

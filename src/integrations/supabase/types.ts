@@ -4705,6 +4705,10 @@ export type Database = {
         }
       }
       complete_super_admin_onboarding: { Args: never; Returns: boolean }
+      configure_whatsapp_campaign_dispatch: {
+        Args: { p_auth_token: string }
+        Returns: undefined
+      }
       delete_account_secret: {
         Args: { p_account_id: string; p_key_name: string; p_provider: string }
         Returns: boolean

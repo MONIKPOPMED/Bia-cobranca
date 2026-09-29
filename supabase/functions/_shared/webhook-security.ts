@@ -80,6 +80,27 @@ export async function validateTwilioSignature(params: {
 }
 
 /**
+ * True when the Twilio signature matches any (url, authToken) pair. Twilio
+ * signs with the Auth Token of the account that owns the call/message, which
+ * depends on the workspace (see resolveWebhookAuthTokens), and the public URL
+ * may differ from req.url behind Supabase's proxy.
+ */
+export async function validateTwilioSignatureAny(params: {
+  urls: string[];
+  authTokens: string[];
+  form: FormData;
+  signature: string | null;
+}): Promise<boolean> {
+  const { urls, authTokens, form, signature } = params;
+  for (const authToken of authTokens) {
+    for (const url of urls) {
+      if (await validateTwilioSignature({ url, form, signature, authToken })) return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Meta (Facebook/WhatsApp/Instagram) webhook signature validation.
  * Header: X-Hub-Signature-256 with value "sha256=<hex>".
  * Body: raw request body bytes; sign with the APP_SECRET (not the verify token).
