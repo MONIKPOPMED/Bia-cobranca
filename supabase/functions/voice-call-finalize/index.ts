@@ -179,6 +179,10 @@ Deno.serve(async (req) => {
       ...(call.metadata as any),
       summary,
       el_status: elStatus,
+      // Why EL ended the conversation (e.g. missing dynamic variable,
+      // client disconnected) — the only clue when a call drops in seconds.
+      el_termination_reason: convData.metadata?.termination_reason ?? null,
+      el_error: convData.metadata?.error ?? null,
       finalized_at: new Date().toISOString(),
     },
   };

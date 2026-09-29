@@ -111,6 +111,17 @@ async function buildElTwiML(
     console.log(
       `[twilio-incoming] EL register-call ok agent=${elAgentId} direction=${direction}`,
     );
+
+    // The TwiML carries EL's conversation_id; store it so elevenlabs-events
+    // and voice-call-finalize can fetch transcript and end reason.
+    const convId = twiml.match(/name="conversation_id"\s+value="([^"]+)"/)?.[1];
+    if (convId && /^[0-9a-f-]{36}$/i.test(callId)) {
+      const { error } = await supabase
+        .from("voice_calls")
+        .update({ source_id: convId })
+        .eq("id", callId);
+      if (error) console.warn("[twilio-incoming] could not store conversation_id", error);
+    }
     return twiml;
   } catch (err) {
     console.error("[twilio-incoming] EL buildTwiML exception", err);
