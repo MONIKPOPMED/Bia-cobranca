@@ -203,6 +203,9 @@ Deno.serve(async (req) => {
     open_conversations: "0",
     has_history: "não",
     debt_id: "",
+    // Used by the registrar_acordo tool header; only campaign calls send it.
+    // Without a default EL rejects manual calls at start (call drops in ~2s).
+    campaign_contact_id: "",
   };
 
   // Critérios de avaliação automática — rodam ao final de cada chamada.
