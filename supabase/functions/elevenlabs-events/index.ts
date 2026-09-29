@@ -72,15 +72,40 @@ async function handleEvent(payload: any) {
       return;
     }
 
-    const { data: call } = await admin
+    let { data: call } = await admin
       .from("voice_calls")
-      .select("id")
+      .select("id, source_id")
       .or(`source_id.eq.${callId},provider_call_sid.eq.${callId}`)
       .maybeSingle();
+
+    // Calls connected via register-call (twilio-incoming) never store the EL
+    // conversation_id; they pass our voice_calls.id and the Twilio CallSid as
+    // dynamic variables, which EL echoes back in the webhook.
+    if (!call) {
+      const dyn = payload.data?.conversation_initiation_client_data?.dynamic_variables ?? {};
+      const voiceCallId = dyn.call_id ?? dyn.voice_call_id;
+      const callSid = dyn.call_sid ?? payload.data?.metadata?.phone_call?.call_sid;
+      if (voiceCallId && /^[0-9a-f-]{36}$/i.test(String(voiceCallId))) {
+        ({ data: call } = await admin
+          .from("voice_calls").select("id, source_id").eq("id", voiceCallId).maybeSingle());
+      }
+      if (!call && callSid) {
+        ({ data: call } = await admin
+          .from("voice_calls").select("id, source_id").eq("provider_call_sid", String(callSid)).maybeSingle());
+      }
+    }
 
     if (!call) {
       console.warn(`[el-events] no voice_call for ${callId} — cron will retry later`);
       return;
+    }
+
+    // voice-call-finalize fetches transcript/audio by source_id.
+    if (!call.source_id && payload.data?.conversation_id) {
+      await admin
+        .from("voice_calls")
+        .update({ source_id: payload.data.conversation_id })
+        .eq("id", call.id);
     }
 
     // Delega tudo pra voice-call-finalize
