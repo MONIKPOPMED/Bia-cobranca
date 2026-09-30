@@ -18,7 +18,10 @@ import {
   FileSpreadsheet,
   CheckCircle2,
   Trash2,
+  MessageCircle,
 } from "lucide-react";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { WhatsAppCampaignsTab } from "@/components/channels/WhatsAppCampaignsTab";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/button";
@@ -74,7 +77,7 @@ import { VoiceCampaignDetailDrawer } from "@/components/voice/VoiceCampaignDetai
 export const Route = createFileRoute("/_authenticated/voice-campaigns")({
   head: () => ({
     meta: [
-      { title: "Campanhas de Voz — cobrAI" },
+      { title: "Campanhas — POPMED" },
       {
         name: "description",
         content:
@@ -92,8 +95,17 @@ export const Route = createFileRoute("/_authenticated/voice-campaigns")({
   component: VoiceCampaignsPage,
 });
 
+type CampaignTab = "voz" | "whatsapp";
+
 function VoiceCampaignsPage() {
-  const { accountId } = useAccount();
+  const { accountId, role } = useAccount();
+  const [tab, setTab] = useState<CampaignTab>("voz");
+
+  // ?tab=whatsapp (link from Canais). Read after mount so SSR and the first
+  // client render match.
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("tab") === "whatsapp") setTab("whatsapp");
+  }, []);
   const [campaigns, setCampaigns] = useState<VoiceCampaign[]>([]);
   const [loading, setLoading] = useState(true);
   const [createOpen, setCreateOpen] = useState(false);
@@ -141,17 +153,41 @@ function VoiceCampaignsPage() {
   return (
     <div className="flex flex-col">
       <PageHeader
-        eyebrow="Ligações em lote"
-        title="Ligações em massa"
-        description="A IA liga pros seus clientes seguindo um script ou conversando livremente, e passa pra um humano quando precisa."
+        eyebrow="Campanhas"
+        title="Campanhas"
+        description={
+          tab === "voz"
+            ? "A Bia liga para os clientes e passa para alguém da equipe quando precisa."
+            : "A Bia manda uma mensagem individual no WhatsApp usando os dados da dívida."
+        }
         actions={
-          <Button size="sm" onClick={() => setCreateOpen(true)}>
-            <Plus className="mr-1 h-3.5 w-3.5" />
-            Nova campanha
-          </Button>
+          tab === "voz" ? (
+            <Button size="sm" onClick={() => setCreateOpen(true)}>
+              <Plus className="mr-1 h-3.5 w-3.5" />
+              Nova campanha
+            </Button>
+          ) : undefined
         }
       />
 
+      <Tabs value={tab} onValueChange={(v) => setTab(v as CampaignTab)} className="px-6 pt-4">
+        <TabsList>
+          <TabsTrigger value="voz">
+            <PhoneCall className="mr-1.5 h-3.5 w-3.5" />
+            Ligações
+          </TabsTrigger>
+          <TabsTrigger value="whatsapp">
+            <MessageCircle className="mr-1.5 h-3.5 w-3.5" />
+            WhatsApp
+          </TabsTrigger>
+        </TabsList>
+      </Tabs>
+
+      {tab === "whatsapp" ? (
+        <div className="px-6 py-6">
+          {accountId && <WhatsAppCampaignsTab accountId={accountId} isAdmin={role === "admin"} />}
+        </div>
+      ) : (
       <div className="grid gap-3 px-6 py-6">
         {loading ? (
           <div className="py-12 text-center text-sm text-muted-foreground">
@@ -182,6 +218,7 @@ function VoiceCampaignsPage() {
           campaigns.map((c) => <CampaignRow key={c.id} campaign={c} onReload={load} onOpen={() => setDrawerCampaign(c)} />)
         )}
       </div>
+      )}
 
       <CreateCampaignDialog
         open={createOpen}
