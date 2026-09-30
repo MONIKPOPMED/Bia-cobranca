@@ -21,7 +21,6 @@ import { cn } from "@/lib/utils";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { useAuth } from "@/lib/auth-context";
 import { useAccount } from "@/lib/account-context";
-import { CobrAILogo } from "@/components/brand/CobrAILogo";
 import { KeyboardShortcuts } from "@/components/layout/KeyboardShortcuts";
 import { NotificationToasts } from "@/components/layout/NotificationToasts";
 import { NotificationsBell } from "@/components/layout/NotificationsBell";
@@ -118,9 +117,8 @@ function Sidebar() {
   return (
     <aside className="sticky top-0 flex h-screen w-[220px] shrink-0 flex-col border-r border-white/[0.06] bg-[#0a0a0f]">
       <div className="flex h-16 items-center gap-2.5 px-5">
-        <CobrAILogo size="md" />
         <div className="leading-tight">
-          <div className="text-sm font-semibold tracking-tight text-slate-300">cobrAI</div>
+          <div className="text-base font-bold tracking-tight text-slate-200">POPMED</div>
           <div className="text-[9px] uppercase tracking-wider text-slate-500">
             Bia cobrança
           </div>
