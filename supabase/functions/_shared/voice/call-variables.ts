@@ -41,8 +41,17 @@ export const DEFAULT_DYNAMIC_VARIABLES: Record<string, string> = {
   saudacao: greeting(null, "Bia", "nossa empresa"),
 };
 
-function greeting(firstName: string | null, agent: string, company: string): string {
-  const who = firstName ? `Oi, é a ${firstName}? ` : "Oi, tudo bem? ";
+/** "Bom dia" / "Boa tarde" / "Boa noite" in São Paulo time. */
+export function greetingOfDay(now = new Date()): string {
+  const hour = Number(
+    new Intl.DateTimeFormat("en-US", { timeZone: "America/Sao_Paulo", hour: "numeric", hourCycle: "h23" }).format(now),
+  );
+  return hour < 12 ? "Bom dia" : hour < 18 ? "Boa tarde" : "Boa noite";
+}
+
+// Gender-neutral on purpose: "é a Monik?" assumed a woman.
+function greeting(firstName: string | null, agent: string, company: string, now = new Date()): string {
+  const who = firstName ? `${greetingOfDay(now)}! Estou falando com ${firstName}? ` : `${greetingOfDay(now)}, tudo bem? `;
   return `${who}Aqui é a ${agent}, da ${company}. Só avisando que essa ligação pode ser gravada, tá?`;
 }
 
