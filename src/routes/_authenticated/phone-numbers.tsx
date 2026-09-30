@@ -386,6 +386,7 @@ function PhoneNumberCard({
 }) {
   const qc = useQueryClient();
   const [dialing, setDialing] = useState(false);
+  const [dialError, setDialError] = useState<string | null>(null);
   const [target, setTarget] = useState("");
   const [activating, setActivating] = useState(false);
 
@@ -397,12 +398,14 @@ function PhoneNumberCard({
     if (!target.trim()) return;
     try {
       setDialing(true);
+      setDialError(null);
       const r = await placeCall({
         fromNumberId: phoneNumber.id,
         toNumber: target.trim(),
         personaId: phoneNumber.pinned_persona_id ?? undefined,
       });
       if (!r.ok) {
+        setDialError(r.message || "Não foi possível iniciar a ligação. Tente novamente.");
         toast.error(r.message ?? "Falha ao discar");
         return;
       }
@@ -416,6 +419,7 @@ function PhoneNumberCard({
       setTarget("");
     } catch (e: unknown) {
       const err = e as Error;
+      setDialError(err.message || "Não foi possível iniciar a ligação. Tente novamente.");
       toast.error(err.message ?? "Falha ao discar");
     } finally {
       setDialing(false);
@@ -665,6 +669,9 @@ function PhoneNumberCard({
               value={target}
               onChange={(e) => setTarget(e.target.value)}
               placeholder="+5511..."
+              aria-label="Número de destino"
+              aria-describedby={dialError ? `dial-error-${phoneNumber.id}` : undefined}
+              disabled={dialing}
               className="h-8 w-40 font-mono text-xs"
             />
             <Button
@@ -679,6 +686,11 @@ function PhoneNumberCard({
           </div>
         )}
       </div>
+      {dialError && (
+        <p id={`dial-error-${phoneNumber.id}`} role="alert" className="mt-2 text-sm text-destructive">
+          {dialError}
+        </p>
+      )}
     </div>
   );
 }
