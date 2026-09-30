@@ -25,6 +25,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.74.0";
 import { resolveCredentialsForAccount, ElevenLabsError } from "../_shared/elevenlabs/index.ts";
 import { buildSystemPromptWithGuardrails } from "../_shared/voice/collection-guardrails.ts";
 import { HANDOFF_RULE } from "../_shared/handoff.ts";
+import { DEFAULT_DYNAMIC_VARIABLES, spokenAgentName } from "../_shared/voice/call-variables.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -182,27 +183,11 @@ Deno.serve(async (req) => {
   // (ex.: ligação manual sem débito vinculado), o EL substitui pelo default
   // ao invés de deixar literal "{{valor_formatado}}" no prompt — o que faria
   // o LLM improvisar um valor.
+  // Placeholders only help EL's dashboard tests — real calls must send every
+  // variable themselves (twilio-incoming → buildCallDynamicVariables).
   const dynamicVariablePlaceholders: Record<string, string> = {
-    company_name: "nossa empresa",
-    agent_name: persona.name ?? "Nina",
-    debtor_name: "cliente",
-    debtor_doc_last4: "----",
-    valor_formatado: "(valor a confirmar)",
-    vencimento_br: "(data a confirmar)",
-    dias_atraso: "0",
-    origem_debito: "débito",
-    descricao: "",
-    desconto_pct: "0",
-    max_parcelas: "1",
-    valor_min_parcela_formatado: "R$ 50,00",
-    first_due_min_days: "3",
-    first_due_max_days: "10",
-    support_phone: "",
-    customer_name: "cliente",
-    caller_phone: "",
-    open_conversations: "0",
-    has_history: "não",
-    debt_id: "",
+    ...DEFAULT_DYNAMIC_VARIABLES,
+    agent_name: spokenAgentName(persona.name),
   };
 
   // Critérios de avaliação automática — rodam ao final de cada chamada.

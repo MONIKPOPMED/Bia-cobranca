@@ -63,6 +63,31 @@ Deno.serve(async (req) => {
       updates.ended_at = new Date().toISOString();
     }
 
+    // Why the carrier ended the call (e.g. SIP 603 = declined, 480 =
+    // unavailable). Twilio sends it here and nowhere else; without it a
+    // "no_answer" after 3s is impossible to tell apart from a real no-answer.
+    const diag: Record<string, string> = {};
+    for (const [field, key] of [
+      ["SipResponseCode", "sip_response_code"],
+      ["ErrorCode", "twilio_error_code"],
+      ["ErrorMessage", "twilio_error_message"],
+      ["AnsweredBy", "answered_by"],
+    ] as const) {
+      const v = formData.get(field)?.toString();
+      if (v) diag[key] = v;
+    }
+    if (Object.keys(diag).length > 0) {
+      const { data: current } = await supabase
+        .from("voice_calls")
+        .select("metadata")
+        .eq("provider_call_sid", callSid)
+        .maybeSingle();
+      updates.metadata = {
+        ...((current?.metadata as Record<string, unknown> | null) ?? {}),
+        twilio_status: { ...diag, call_status: callStatus },
+      };
+    }
+
     const { data: updated, error } = await supabase
       .from("voice_calls")
       .update(updates)
