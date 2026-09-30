@@ -150,8 +150,9 @@ Deno.serve(async (req) => {
   // HANDOFF_RULE vai depois do prompt da persona para valer mesmo quando a
   // persona já traz o template completo (que pula o header de guardrails).
   const systemPrompt = `${buildSystemPromptWithGuardrails(rawSystemPrompt)}\n\n${HANDOFF_RULE}`;
-  const firstMessage = (persona.first_message as string | null) ??
-    `Olá, {{debtor_name}}. Aqui é {{agent_name}} da {{company_name}}. Esta chamada pode ser gravada. Posso falar com o senhor, a senhora?`;
+  // {{saudacao}} is built per call (buildCallDynamicVariables) so the opening
+  // sounds natural with or without the customer's name.
+  const firstMessage = (persona.first_message as string | null) ?? "{{saudacao}}";
 
   // Advanced config with fallback defaults for personas created before
   // the migration added these columns.
@@ -284,7 +285,7 @@ Deno.serve(async (req) => {
               type: "webhook",
               name: "registrar_acordo",
               description:
-                "Registra o acordo aceito pelo devedor. CHAME IMEDIATAMENTE quando o devedor confirmar valor + parcelas + método. NÃO inclua conversation_id nem debt_id — esses IDs são preenchidos automaticamente pelo sistema. Apenas envie valor_negociado, num_parcelas, metodo e primeiro_vencimento_dias. Sem essa chamada, o acordo NÃO existe. Os valores devem respeitar desconto_pct e max_parcelas. Se a tool retornar erro, NÃO diga ao cliente que houve problema técnico — apenas tente novamente uma única vez.",
+                "Registra que o cliente confirmou que vai pagar. Chame quando ele confirmar o pagamento à vista por PIX ou cartão. valor_negociado = o valor a pagar informado no contexto (em número, ex.: 89.90); num_parcelas = 1 (não existe parcelamento). NÃO inclua conversation_id nem debt_id — são preenchidos pelo sistema. Se a tool retornar erro, NÃO diga ao cliente que houve problema técnico — tente uma única vez de novo e depois diga que a equipe vai confirmar pelo WhatsApp.",
               api_schema: {
                 url: `${nexusBase}/functions/v1/arrangement-from-agent-tool`,
                 method: "POST",
@@ -329,8 +330,43 @@ Deno.serve(async (req) => {
                 },
               },
             },
+            {
+              type: "webhook",
+              name: "enviar_link_pagamento",
+              description:
+                "Envia pelo WhatsApp do cliente o link de pagamento (PIX ou cartão). Chame assim que o cliente escolher a forma de pagamento. Leia a resposta: se ok=true, diga que o link foi enviado pelo WhatsApp; se não, siga a mensagem retornada.",
+              api_schema: {
+                url: `${nexusBase}/functions/v1/voice-send-payment-link`,
+                method: "POST",
+                request_headers: {
+                  ...(elWebhookSecret ? { "x-el-webhook-secret": elWebhookSecret } : {}),
+                  "x-conversation-id": "{{system__conversation_id}}",
+                },
+                request_body_schema: {
+                  type: "object",
+                  required: ["metodo"],
+                  properties: {
+                    metodo: {
+                      type: "string",
+                      enum: ["pix", "cartao"],
+                      description: "Forma de pagamento escolhida pelo cliente.",
+                    },
+                  },
+                },
+              },
+            },
           ],
           tool_ids: [],
+          // Lets the agent hang up after the goodbye — without it the 30/09
+          // test call kept asking "você ainda está na linha?".
+          built_in_tools: {
+            end_call: {
+              type: "system",
+              name: "end_call",
+              description: "Encerra a ligação depois da despedida, ou quando a pessoa pedir para desligar.",
+              params: { system_tool_type: "end_call" },
+            },
+          },
           knowledge_base: knowledgeBase,
         },
       },
