@@ -44,12 +44,17 @@ Deno.serve(async (req) => {
     }
   }
 
+  // The query string wins: when voice-escalate redirects a live call, Twilio
+  // POSTs the call's own parameters, and its `To` is the CUSTOMER — using it
+  // would "transfer" the customer to themselves.
   const queryTo = url.searchParams.get("to") ?? "";
-  const to = postedTo || queryTo;
+  const to = queryTo || postedTo;
   const mode = url.searchParams.get("mode") ?? (to ? "transfer" : "voicemail");
 
   if (mode === "transfer") {
-    const callerId = postedCallerId || url.searchParams.get("caller_id") || "+5548996975445";
+    // voice-escalate always sends caller_id; the fallback only serves the
+    // TwiML App (browser dialer) path, as before.
+    const callerId = url.searchParams.get("caller_id") || postedCallerId || "+5548996975445";
     if (!/^\+[1-9]\d{7,14}$/.test(to)) {
       return xml(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>

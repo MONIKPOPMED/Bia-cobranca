@@ -46,7 +46,7 @@ Deno.serve(async (req) => {
 
     const { data: call } = await admin
       .from("voice_calls")
-      .select("id, account_id, persona_id, provider_call_sid, phone_number_id, metadata")
+      .select("id, account_id, persona_id, provider_call_sid, phone_number_id, direction, from_number, to_number, metadata")
       .eq("id", voiceCallId)
       .maybeSingle();
     if (!call) return j({ error: "voice_call not found" }, 404);
@@ -110,8 +110,13 @@ Deno.serve(async (req) => {
 
     // Redirect the live Twilio call to a new TwiML endpoint
     const nexusBase = (Deno.env.get("NEXUS_PUBLIC_URL") ?? Deno.env.get("SUPABASE_URL") ?? "").replace(/\/$/, "");
+    // Caller ID shown to the team = our own number on this call (the number
+    // we dialed from, or the one the customer called). Without it the TwiML
+    // endpoint fell back to a hard-coded, now-deactivated number.
+    const ownNumber = String(call.direction).startsWith("outbound") ? call.from_number : call.to_number;
     const twimlUrl = mode === "transfer"
-      ? `${nexusBase}/functions/v1/twilio-escalate-twiml?mode=transfer&to=${encodeURIComponent(targetPhone!)}`
+      ? `${nexusBase}/functions/v1/twilio-escalate-twiml?mode=transfer&to=${encodeURIComponent(targetPhone!)}` +
+        (ownNumber ? `&caller_id=${encodeURIComponent(ownNumber)}` : "")
       : `${nexusBase}/functions/v1/twilio-escalate-twiml?mode=voicemail`;
 
     const { creds } = await loadPhoneNumberCreds(admin, call.phone_number_id);

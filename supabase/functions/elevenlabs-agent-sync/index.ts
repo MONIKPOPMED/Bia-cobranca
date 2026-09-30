@@ -355,6 +355,29 @@ Deno.serve(async (req) => {
                 },
               },
             },
+            {
+              type: "webhook",
+              name: "transferir_para_equipe",
+              description:
+                "Transfere a ligação para alguém da equipe. Use quando o cliente pedir para falar com alguém, contestar a cobrança, pedir cancelamento ou quando você não souber resolver. ANTES de chamar, diga: \"Vou te passar para alguém da nossa equipe, só um instante.\" Se a resposta vier com ok=false, siga a mensagem retornada (em geral: informar o horário de atendimento).",
+              api_schema: {
+                url: `${nexusBase}/functions/v1/voice-transfer-tool`,
+                method: "POST",
+                request_headers: {
+                  ...(elWebhookSecret ? { "x-el-webhook-secret": elWebhookSecret } : {}),
+                  "x-conversation-id": "{{system__conversation_id}}",
+                },
+                request_body_schema: {
+                  type: "object",
+                  properties: {
+                    motivo: {
+                      type: "string",
+                      description: "Motivo curto da transferência (ex.: pediu para falar com alguém, contestou o valor).",
+                    },
+                  },
+                },
+              },
+            },
           ],
           tool_ids: [],
           // Lets the agent hang up after the goodbye — without it the 30/09
