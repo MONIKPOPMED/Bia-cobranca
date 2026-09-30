@@ -122,7 +122,7 @@ function Sidebar() {
         <div className="leading-tight">
           <div className="text-sm font-semibold tracking-tight text-slate-300">cobrAI</div>
           <div className="text-[9px] uppercase tracking-wider text-slate-500">
-            Agente de cobrança
+            Bia cobrança
           </div>
         </div>
       </div>
