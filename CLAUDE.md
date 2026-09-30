@@ -6,7 +6,7 @@ Agente de cobrança por voz e WhatsApp ("Bia") da POPMED. Tudo em português do 
 
 ## Stack real
 
-- **App**: TanStack Start (React) + Vite + Tailwind, gerado/editado pelo **Lovable** (projeto `8dfe8a99-797f-4664-8595-b57321b059c6`, site público `nexus-ai-voice-memories.lovable.app`).
+- **App**: TanStack Start (React) + Vite + Tailwind, gerado/editado pelo **Lovable** (projeto `8dfe8a99-797f-4664-8595-b57321b059c6`, "Bia IA cobrança ok"; site público `https://bia-cobranca.lovable.app` desde 30/09 — o antigo `nexus-ai-voice-memories.lovable.app` dá 404). O cron da campanha WhatsApp chama `<site>/api/public/whatsapp-campaign-dispatch` (URL fixa na migração 0008): se o endereço mudar de novo, peça ao Lovable para atualizar o cron e a Site URL do login.
 - **Backend**: Lovable Cloud = Supabase (`qsbsnsoswkzrrydkiclz`). Edge functions em Deno em `supabase/functions/`. Server functions do app em `src/lib/*.functions.ts`.
 - **Voz**: Twilio (conta `AC47fb…`, números como *Verified Caller ID*) + ElevenLabs Conversational AI (agente da persona Bia).
 - **WhatsApp**: Evolution API v2 (instância `nexus_ebf3eba4002d_63639915`), webhook → `evolution-incoming`.
@@ -19,7 +19,7 @@ Agente de cobrança por voz e WhatsApp ("Bia") da POPMED. Tudo em português do 
 3. **Edge functions NÃO são publicadas automaticamente** a partir do GitHub. Peça no chat do projeto no Lovable, uma por vez ou em lista:
    > Faça o deploy da(s) edge function(s) `X` exatamente como está no código atual (veio do GitHub, PR #N). Não altere nenhum código, só publique no backend.
 
-   Confirme depois (ex.: a resposta muda, ou uma chamada sem auth devolve o erro novo).
+   Confirme depois (ex.: a resposta muda, ou uma chamada sem auth devolve o erro novo). **Cada pedido gasta crédito do Lovable**: junte as funções num pedido só. Se pausar por falta de crédito, depois da compra aparece o botão **Retomar**. Função nova chamada pela ElevenLabs precisa ir com `verify_jwt = false` (peça no deploy; não mexa no `supabase/config.toml`, que só tem o `project_id`).
 4. O item "Build malsucedido" no histórico do Lovable é **texto oculto na página**, não o status real — confira a prévia (`__lovable_sha` do link) em vez disso.
 
 ## Verificação local
@@ -41,6 +41,8 @@ Agente de cobrança por voz e WhatsApp ("Bia") da POPMED. Tudo em português do 
 - **Evolution v2** manda eventos com ponto (`messages.upsert`); `evolution-incoming` normaliza para `MESSAGES_UPSERT`. A tabela `messages` **não tem** índice único `(account_id, source_id)` — não use `upsert(onConflict)` nela. JIDs de celular BR podem vir **sem o 9º dígito**: o contato é achado por `phoneVariants`.
 - `persona-auto-reply` injeta as dívidas abertas + limites de `company_settings` (`loadDebtContext`) e a regra de encaminhamento (`_shared/handoff.ts`).
 - Cron da campanha WhatsApp autentica com `LOVABLE_CRON_SECRET` (`authenticateCronRequest`).
+- **Variáveis da Bia**: os `dynamic_variable_placeholders` do agente **não valem em ligação real** — sem as variáveis a ElevenLabs derruba a conversa em ~2 s ("Missing required dynamic variables in first message"). Toda ligação manda o conjunto completo via `buildCallDynamicVariables` (`_shared/voice/call-variables.ts`); a mesma lista vira placeholder no sync. Variável nova no prompt/tools → acrescente em `DEFAULT_DYNAMIC_VARIABLES`.
+- **Diagnóstico de ligação**: `voice_calls.metadata.twilio_status` (código SIP da operadora), `source_id` = conversation_id da ElevenLabs (gravado pelo `twilio-incoming`), `metadata.el_termination_reason` / `el_error` (gravados pelo `voice-call-finalize`). A transcrição traz `conversation_turn_metrics` com a latência de cada etapa (ASR, LLM, TTS).
 
 ## Regras de negócio
 
@@ -48,17 +50,20 @@ Agente de cobrança por voz e WhatsApp ("Bia") da POPMED. Tudo em português do 
 - **Números**: `+5548996056774` é o número de saída (Caller ID verificado, `verified_caller_id_only`, persona Bia). `+5548996975445` está **desativado** (não excluir: tem histórico).
 - **Encaminhamento**: a Bia nunca diz "atendente humano"; diz que vai passar para alguém da equipe e informa o horário — seg–sex, exceto feriados, 9h–12h30 e 13h30–17h (`SUPPORT_HOURS_TEXT`).
 - **Roteiro da Bia** fica no banco (`agent_personas.system_prompt`, persona `9d5fd87e-…`), não no código. Depois de editar, **re-sincronize** (`elevenlabs-agent-sync` / botão Re-sincronizar) para valer na ligação.
-- **Pagamento de uma mensalidade**: links fixos no roteiro — PIX `https://popmed.com.br/produto/popmed-plano-mensal-ia2-pix/`, cartão `https://popmed.com.br/produto/popmed-plano-mensal-ia2-cc/`. Com **mais de uma parcela em aberto**, a Bia passa para a equipe (links para esses casos ainda não existem).
+- **Pagamento (regra da POPMED, 30/09)**: só **à vista, PIX ou cartão — não existe parcelamento**. 1 ou 2 mensalidades em atraso: valor cheio e a Bia **não fala de desconto**. 3 ou mais: **10% de desconto** à vista. Na ligação, a regra é calculada em `debtVariables` e o link vai pelo WhatsApp (ferramenta `enviar_link_pagamento` → `voice-send-payment-link`).
+- **Links fixos** (só para UMA mensalidade; `_shared/payment-links.ts` e roteiro): PIX `https://popmed.com.br/produto/popmed-plano-mensal-ia2-pix/`, cartão `https://popmed.com.br/produto/popmed-plano-mensal-ia2-cc/`. Com 2+ mensalidades a equipe manda o link (ainda não existem links para esses casos).
+- **Tom**: o roteiro tem a seção "TOM DE ATENDIMENTO" (saudação do horário, primeiro nome, "Posso te ajudar em mais alguma coisa?", emoji ≤1 só no WhatsApp). Nunca pedir CPF ou documento.
 
 ## Cuidado
 
 - Ligações e campanhas de WhatsApp atingem **pessoas reais** (a Carteira tem devedores reais). Teste só com números combinados.
 - Não commite segredos. O `.env` contém apenas valores públicos (URL e publishable key do Supabase).
 
-## Pendências (set/2026)
+## Pendências (30/09/2026)
 
-- Testar ligação real com a Bia pelo 6774 (em horário permitido) — a cadeia Twilio → app → ElevenLabs foi corrigida, falta ouvir a Bia falando.
-- Várias chamadas recentes foram recusadas pela operadora em 0–4 s (possível filtro anti-spam do Caller ID).
-- Links de pagamento para mais de uma parcela e outros casos.
+- A Bia já fala nas ligações (teste de 30/09, 3 min). Número de teste combinado: `+5548991667070`.
+- PR #21 (regras da POPMED, link pelo WhatsApp, tom humano, `end_call`): depois do merge, deploy de `twilio-incoming`, `elevenlabs-agent-sync`, `elevenlabs-personalization` e da nova `voice-send-payment-link` (verify_jwt = false); trocar `llm_model` da persona para `gemini-2.5-flash-lite` (o `gemini-2.5-flash` levava 2–5 s por resposta), re-sincronizar e testar de novo.
+- As recusas da operadora em 0–4 s agora ficam em `metadata.twilio_status` — conferir nas próximas ligações.
+- Links de pagamento para 2+ mensalidades (a POPMED precisa criar).
 - Contato/conversa duplicados criados em 24/09 (`ffaf06b6…` / `f13548e4…`) podem ser limpos.
-- PR #3 (rascunho do Codex, "Exibe erros da discagem no cartão do número") — decidir se aproveita ou fecha.
+- 5 ligações antigas presas em `queued` (16–24/09) — só cosmético.
