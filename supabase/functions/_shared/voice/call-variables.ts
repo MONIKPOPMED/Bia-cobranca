@@ -49,10 +49,15 @@ export function greetingOfDay(now = new Date()): string {
   return hour < 12 ? "Bom dia" : hour < 18 ? "Boa tarde" : "Boa noite";
 }
 
+// Short on purpose: the first seconds of audio on a BR mobile often get lost
+// (30/09 test: greeting unheard, customer said "alô" three times). A short
+// "Alô?" opener invites a reply; the agent introduces itself and gives the
+// recording notice in its next turn (collection-guardrails, step 1).
 // Gender-neutral on purpose: "é a Monik?" assumed a woman.
-function greeting(firstName: string | null, agent: string, company: string, now = new Date()): string {
-  const who = firstName ? `${greetingOfDay(now)}! Estou falando com ${firstName}? ` : `${greetingOfDay(now)}, tudo bem? `;
-  return `${who}Aqui é a ${agent}, da ${company}. Só avisando que essa ligação pode ser gravada, tá?`;
+function greeting(firstName: string | null, _agent: string, _company: string, now = new Date()): string {
+  return firstName
+    ? `Alô? ${greetingOfDay(now)}! Estou falando com ${firstName}?`
+    : `Alô? ${greetingOfDay(now)}, tudo bem?`;
 }
 
 /** "Bia cobrança" → "Bia": the persona name doubles as a label in the app. */
