@@ -40,6 +40,19 @@ async function resolveElAgentId(
   return (data?.elevenlabs_agent_id as string | null) ?? null;
 }
 
+/** Campaign calls (voice-campaign-dispatch) carry their ids and CSV variables in metadata. */
+// deno-lint-ignore no-explicit-any
+function campaignVariables(metadata: any): Record<string, string> {
+  if (!metadata?.campaign_id) return {};
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(metadata.variables ?? {})) {
+    if (v !== null && v !== undefined) out[k] = String(v);
+  }
+  out.campaign_id = String(metadata.campaign_id);
+  if (metadata.campaign_contact_id) out.campaign_contact_id = String(metadata.campaign_contact_id);
+  return out;
+}
+
 async function buildElTwiML(
   supabase: any,
   accountId: string,
@@ -50,6 +63,7 @@ async function buildElTwiML(
   direction: string,
   callId: string,
   callSid: string,
+  extraVariables: Record<string, string> = {},
 ): Promise<string> {
   // The persona's EL agent lives in the workspace's ElevenLabs account (vault
   // key, same as elevenlabs-agent-sync) — the global env key may belong to a
@@ -94,6 +108,7 @@ async function buildElTwiML(
         conversation_initiation_client_data: {
           dynamic_variables: {
             ...dynamicVariables,
+            ...extraVariables,
             call_id: callId,
             call_sid: callSid,
             caller_id: customerPhone,
@@ -274,11 +289,12 @@ Deno.serve(async (req) => {
 
     // For outbound-api, voice-outbound already created the voice_calls row
     // before dialing. Look it up by CallSid to avoid duplicating.
-    let call: { id: string } | null = null;
+    // deno-lint-ignore no-explicit-any
+    let call: { id: string; metadata?: any } | null = null;
     if (direction.startsWith("outbound")) {
       const { data: existing } = await supabase
         .from("voice_calls")
-        .select("id")
+        .select("id, metadata")
         .eq("provider_call_sid", callSid)
         .maybeSingle();
       if (existing) call = existing;
@@ -357,6 +373,7 @@ Deno.serve(async (req) => {
             direction,
             callId,
             callSid,
+            campaignVariables(call?.metadata),
           );
         } else {
           // Fallback: ConversationRelay (Twilio-hosted STT+TTS).

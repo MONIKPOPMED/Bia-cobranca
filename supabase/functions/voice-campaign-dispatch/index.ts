@@ -13,6 +13,8 @@ import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-
 import { loggerFor } from "../_shared/logger.ts";
 import { toE164 } from "../_shared/twilio/index.ts";
 import { resolveCredentialsForAccount } from "../_shared/elevenlabs/client.ts";
+import { buildCallDynamicVariables } from "../_shared/voice/call-variables.ts";
+import { placeTwilioOutboundCall } from "../_shared/voice/twilio-outbound.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -269,12 +271,16 @@ async function dispatchOne(admin: SupabaseClient, row: any, log: any) {
     .select("e164, elevenlabs_phone_number_id")
     .eq("id", fromNumberId)
     .maybeSingle();
-  if (!phoneRow?.elevenlabs_phone_number_id) {
-    throw new Error(
-      "número Twilio não está ativado com ElevenLabs — abre /phone-numbers e clica 'Ativar IA'",
-    );
-  }
+  if (!phoneRow?.e164) throw new Error("número emissor da campanha não encontrado");
   campaign.fromE164 = phoneRow.e164;
+
+  // Numbers not imported into ElevenLabs (e.g. Verified Caller IDs, which EL
+  // cannot import) go through our own Twilio → twilio-incoming → Bia, the
+  // same path as the manual "Ligar" button.
+  if (!phoneRow.elevenlabs_phone_number_id) {
+    await dispatchViaTwilio(admin, row, campaign, fromNumberId, toNumber, log);
+    return;
+  }
 
   const { data: persona } = await admin
     .from("agent_personas")
@@ -319,7 +325,13 @@ async function dispatchOne(admin: SupabaseClient, row: any, log: any) {
 
   // Call variables (template vars) flow as dynamic_variables → agent can
   // reference them via {{var_name}} in system_prompt, first_message, tools.
+  // EL rejects the conversation if any {{var}} the agent uses is missing.
   const dynamicVariables = {
+    ...(await buildCallDynamicVariables(admin, {
+      accountId: row.account_id,
+      personaId: campaign.persona_id,
+      customerPhone: toNumber,
+    })),
     ...(row.variables ?? {}),
     campaign_id: campaign.id,
     campaign_contact_id: row.id,
@@ -391,6 +403,66 @@ async function dispatchOne(admin: SupabaseClient, row: any, log: any) {
     contact_id: row.contact_id,
     sid: data.callSid,
   });
+}
+
+// deno-lint-ignore no-explicit-any
+async function dispatchViaTwilio(admin: SupabaseClient, row: any, campaign: any, fromNumberId: string, toNumber: string, log: any) {
+  // twilio-incoming finds this row by CallSid and reads metadata.campaign_*
+  // (transfer target, variables).
+  const { data: vc, error: vcErr } = await admin
+    .from("voice_calls")
+    .insert({
+      account_id: row.account_id,
+      phone_number_id: fromNumberId,
+      persona_id: campaign.persona_id,
+      direction: "outbound",
+      status: "queued",
+      provider: "twilio",
+      from_number: campaign.fromE164,
+      to_number: toNumber,
+      started_at: new Date().toISOString(),
+      metadata: {
+        campaign_id: campaign.id,
+        campaign_contact_id: row.id,
+        contact_id: row.contact_id ?? null,
+        variables: row.variables,
+        engine: "twilio-register-call",
+      },
+    })
+    .select("id")
+    .single();
+  if (vcErr || !vc) throw new Error(`voice_calls insert failed: ${vcErr?.message ?? "no row"}`);
+
+  let callSid: string;
+  try {
+    ({ callSid } = await placeTwilioOutboundCall(admin, {
+      phoneNumberId: fromNumberId,
+      from: campaign.fromE164,
+      to: toNumber,
+    }));
+  } catch (err) {
+    await admin
+      .from("voice_calls")
+      .update({ status: "failed", ended_at: new Date().toISOString(), metadata: { campaign_id: campaign.id, campaign_contact_id: row.id, error: String(err).slice(0, 300) } })
+      .eq("id", vc.id);
+    throw err;
+  }
+
+  await admin.from("voice_calls").update({ provider_call_sid: callSid }).eq("id", vc.id);
+  await admin
+    .from("voice_campaign_contacts")
+    .update({ status: "placed", voice_call_id: vc.id, dispatched_at: new Date().toISOString() })
+    .eq("id", row.id);
+  await admin.rpc("bump_voice_campaign_totals", { p_campaign_id: row.campaign_id, p_placed: 1 });
+  await admin.from("call_attempts_log").insert({
+    account_id: row.account_id,
+    contact_id: row.contact_id,
+    phone_number: toNumber,
+    campaign_id: row.campaign_id,
+    voice_call_id: vc.id,
+    outcome: "placed",
+  });
+  log.info("placed", { campaign_id: row.campaign_id, contact_id: row.contact_id, sid: callSid, via: "twilio" });
 }
 
 async function checkCampaignQuota(
