@@ -4705,6 +4705,10 @@ export type Database = {
         }
       }
       complete_super_admin_onboarding: { Args: never; Returns: boolean }
+      configure_voice_campaign_dispatch: {
+        Args: { p_auth_token: string }
+        Returns: undefined
+      }
       configure_whatsapp_campaign_dispatch: {
         Args: { p_auth_token: string }
         Returns: undefined
