@@ -29,8 +29,13 @@ Deno.serve(async (req) => {
   const log = loggerFor(req, { function: "voice-campaign-dispatch" });
 
   const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-  const isService = (req.headers.get("Authorization") ?? "").includes(serviceKey);
-  if (!isService) return j({ error: "service role required" }, 403);
+  const authHeader = req.headers.get("Authorization") ?? "";
+  const cronHeader = req.headers.get("x-cron-secret") ?? "";
+  const cronSecrets = [Deno.env.get("LOVABLE_CRON_SECRET"), Deno.env.get("LOVABLE_CRON_SECRET_PREVIOUS")]
+    .filter((s): s is string => !!s && s.length >= 16);
+  const isService = !!serviceKey && authHeader.includes(serviceKey);
+  const isCron = !!cronHeader && cronSecrets.some((s) => safeEqual(s, cronHeader));
+  if (!isService && !isCron) return j({ error: "service role required" }, 403);
 
   const admin = createClient(Deno.env.get("SUPABASE_URL")!, serviceKey);
 
