@@ -7,6 +7,7 @@
 // So every call must send the full set; these defaults fill what we don't know.
 import { phoneVariants } from "../phone.ts";
 import { discountPctFor } from "../payment-links.ts";
+import { spokenPhone, supportDigits } from "../handoff.ts";
 
 export const DEFAULT_DYNAMIC_VARIABLES: Record<string, string> = {
   company_name: "nossa empresa",
@@ -36,6 +37,9 @@ export const DEFAULT_DYNAMIC_VARIABLES: Record<string, string> = {
   valor_a_pagar_formatado: "(valor a confirmar)",
   regra_pagamento:
     "Não há dívida em aberto no sistema para este número. Não cite valores nem condições; passe o atendimento para a equipe.",
+  // Team WhatsApp dictated digit by digit (HANDOFF_RULE_VOICE); filled from
+  // company_settings.support_phone.
+  whatsapp_equipe_falado: "o WhatsApp da nossa equipe, que vamos te enviar por mensagem",
   // Agent's first message ({{saudacao}}), built per call so it sounds natural
   // with or without the customer's name.
   saudacao: greeting(null, "Bia", "nossa empresa"),
@@ -140,6 +144,8 @@ export async function buildCallDynamicVariables(
   const company = settings?.company_name || account?.name;
   if (company) vars.company_name = company;
   if (settings?.support_phone) vars.support_phone = settings.support_phone;
+  const teamDigits = supportDigits(settings?.support_phone);
+  if (teamDigits) vars.whatsapp_equipe_falado = spokenPhone(teamDigits);
   vars.agent_name = spokenAgentName(persona?.name);
 
   const contact = contacts?.[0] as { id: string; name: string | null } | undefined;

@@ -24,7 +24,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.74.0";
 import { resolveCredentialsForAccount, ElevenLabsError } from "../_shared/elevenlabs/index.ts";
 import { buildSystemPromptWithGuardrails } from "../_shared/voice/collection-guardrails.ts";
-import { HANDOFF_RULE } from "../_shared/handoff.ts";
+import { HANDOFF_RULE_VOICE } from "../_shared/handoff.ts";
 import { DEFAULT_DYNAMIC_VARIABLES, spokenAgentName } from "../_shared/voice/call-variables.ts";
 
 const corsHeaders = {
@@ -147,9 +147,9 @@ Deno.serve(async (req) => {
   // Injeta header de regras de cobrança automaticamente — usuário pode
   // escrever prompt curto sem variáveis e mesmo assim o agente recebe
   // contexto + tetos + compliance.
-  // HANDOFF_RULE vai depois do prompt da persona para valer mesmo quando a
+  // HANDOFF_RULE_VOICE vai depois do prompt da persona para valer mesmo quando a
   // persona já traz o template completo (que pula o header de guardrails).
-  const systemPrompt = `${buildSystemPromptWithGuardrails(rawSystemPrompt)}\n\n${HANDOFF_RULE}`;
+  const systemPrompt = `${buildSystemPromptWithGuardrails(rawSystemPrompt)}\n\n${HANDOFF_RULE_VOICE}`;
   // {{saudacao}} is built per call (buildCallDynamicVariables) so the opening
   // sounds natural with or without the customer's name.
   const firstMessage = (persona.first_message as string | null) ?? "{{saudacao}}";
@@ -355,30 +355,9 @@ Deno.serve(async (req) => {
                 },
               },
             },
-            {
-              type: "webhook",
-              name: "transferir_para_equipe",
-              description:
-                "Transfere a ligação para alguém da equipe. Use quando o cliente pedir para falar com alguém, contestar a cobrança, pedir cancelamento ou quando você não souber resolver. ANTES de chamar, diga: \"Vou te passar para alguém da nossa equipe, só um instante.\" Se a resposta vier com ok=false, siga a mensagem retornada (em geral: informar o horário de atendimento).",
-              api_schema: {
-                url: `${nexusBase}/functions/v1/voice-transfer-tool`,
-                method: "POST",
-                request_headers: {
-                  ...(elWebhookSecret ? { "x-el-webhook-secret": elWebhookSecret } : {}),
-                  "x-conversation-id": "{{system__conversation_id}}",
-                },
-                request_body_schema: {
-                  type: "object",
-                  properties: {
-                    motivo: {
-                      type: "string",
-                      description: "Motivo curto da transferência (ex.: pediu para falar com alguém, contestou o valor).",
-                    },
-                  },
-                },
-              },
-            },
           ],
+          // No transfer tool on purpose: POPMED's team answers on WhatsApp, so
+          // the agent dictates that number instead (HANDOFF_RULE_VOICE).
           tool_ids: [],
           // Lets the agent hang up after the goodbye — without it the 30/09
           // test call kept asking "você ainda está na linha?".
