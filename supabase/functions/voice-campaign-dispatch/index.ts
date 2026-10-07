@@ -1,4 +1,11 @@
 // Cron-driven dispatcher for queued voice_campaign_contacts rows.
+// Auth: service role in Authorization, or LOVABLE_CRON_SECRET in x-cron-secret (pg_cron job).
+function safeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
 // Runs every minute:
 //   1. Pulls N rows where status=queued and dispatch_after <= now()
 //   2. For each, invokes Twilio /Calls.json pointing TwiML URL to
