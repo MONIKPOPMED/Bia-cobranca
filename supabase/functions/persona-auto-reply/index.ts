@@ -7,7 +7,8 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.74.0";
 import { sendText } from "../_shared/evolution/index.ts";
-import { formatBrPhone, HANDOFF_MARKER, HANDOFF_RULE_WHATSAPP, supportDigits } from "../_shared/handoff.ts";
+import { formatBrPhone, HANDOFF_MARKER, HANDOFF_RULE_WHATSAPP } from "../_shared/handoff.ts";
+import { type EvolutionSender, loadTeamWhatsApp, notifyTeam } from "../_shared/team-handoff.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -218,6 +219,11 @@ Deno.serve(async (req) => {
   const handoff = reply.includes(HANDOFF_MARKER);
   reply = reply.split(HANDOFF_MARKER).join("").trim();
   if (!reply) return j({ skipped: "empty_reply" });
+  if (handoff) {
+    // Tell the customer which number the team will write from.
+    const team = await loadTeamWhatsApp(admin, accountId);
+    if (team) reply = `${reply}\nA mensagem da nossa equipe vai chegar do WhatsApp ${formatBrPhone(team)}.`;
+  }
 
   // 7) Persist the AgentBot message (no dispatch from this function — the
   // channel-specific sender owns delivery).
@@ -265,7 +271,7 @@ Deno.serve(async (req) => {
     if (handoff) {
       try {
         await handOffToTeam(admin, {
-          accountId, conversationId, inboxId, personaId, number,
+          accountId, conversationId, number,
           contactId: conversation?.contact_id ?? null,
           evolution: { url: cfg.evolution_url, apiKey: cfg.evolution_api_key, instanceName: cfg.evolution_instance_name },
         });
@@ -366,12 +372,10 @@ export async function loadDebtContext(
   return lines.join("\n");
 }
 
-const HANDOFF_COOLDOWN_HOURS = 24;
-
 /**
- * POPMED handoff on WhatsApp: the customer gets the team's WhatsApp
- * (company_settings.support_phone) and the team gets a summary there.
- * At most once per conversation every HANDOFF_COOLDOWN_HOURS.
+ * POPMED handoff on WhatsApp (07/10): the team's WhatsApp gets the case
+ * summary and calls the customer; the Bia stops replying in this
+ * conversation (ai_paused — can be re-enabled from Chat ao Vivo).
  */
 async function handOffToTeam(
   // deno-lint-ignore no-explicit-any
@@ -379,56 +383,13 @@ async function handOffToTeam(
   opts: {
     accountId: string;
     conversationId: string;
-    inboxId: string | null;
-    personaId: string | null;
     number: string;
     contactId: string | null;
-    evolution: { url: string; apiKey: string; instanceName: string };
+    evolution: EvolutionSender;
   },
 ) {
-  const [{ data: settings }, { data: conv }] = await Promise.all([
-    admin.from("company_settings").select("support_phone").eq("account_id", opts.accountId).maybeSingle(),
+  const [{ data: conv }, { data: recent }] = await Promise.all([
     admin.from("conversations").select("additional_attributes").eq("id", opts.conversationId).maybeSingle(),
-  ]);
-  const team = supportDigits(settings?.support_phone);
-  if (!team) {
-    console.warn("[persona-auto-reply] handoff without company_settings.support_phone", opts.accountId);
-    return;
-  }
-  const attrs = (conv?.additional_attributes ?? {}) as Record<string, unknown>;
-  const last = typeof attrs.handoff_notified_at === "string" ? Date.parse(attrs.handoff_notified_at) : NaN;
-  if (Number.isFinite(last) && Date.now() - last < HANDOFF_COOLDOWN_HOURS * 3600 * 1000) return;
-
-  // 1) Customer: the team's WhatsApp.
-  const toCustomer =
-    `Para continuar, é só chamar a nossa equipe no WhatsApp: ${formatBrPhone(team)}\nhttps://wa.me/${team}`;
-  const { data: msg } = await admin
-    .from("messages")
-    .insert({
-      account_id: opts.accountId,
-      conversation_id: opts.conversationId,
-      inbox_id: opts.inboxId,
-      content: toCustomer,
-      content_type: 0,
-      message_type: 1,
-      sender_type: "AgentBot",
-      sender_id: opts.personaId,
-      private: false,
-      content_attributes: { kind: "handoff_contact" },
-    })
-    .select("id")
-    .single();
-  const sentCustomer = await sendText({ ...opts.evolution, number: opts.number, text: toCustomer });
-  if (msg?.id) await admin.from("messages").update({ source_id: sentCustomer.messageId ?? null }).eq("id", msg.id);
-
-  // 2) Team: who, what is owed, and the last messages.
-  const [{ data: contact }, { data: debts }, { data: recent }] = await Promise.all([
-    opts.contactId
-      ? admin.from("contacts").select("name, phone_number").eq("id", opts.contactId).maybeSingle()
-      : Promise.resolve({ data: null }),
-    opts.contactId
-      ? admin.from("debts").select("valor_atual").eq("account_id", opts.accountId).eq("contact_id", opts.contactId).in("status", ["aberto", "em_negociacao"])
-      : Promise.resolve({ data: [] }),
     admin
       .from("messages")
       .select("content, sender_type")
@@ -437,26 +398,31 @@ async function handOffToTeam(
       .order("created_at", { ascending: false })
       .limit(6),
   ]);
-  const customerDigits = String(contact?.phone_number ?? opts.number).replace(/\D/g, "");
-  const open = (debts ?? []) as Array<{ valor_atual: number | null }>;
-  const total = open.reduce((sum, d) => sum + Number(d.valor_atual ?? 0), 0);
-  const lines = [
-    "🔔 Atendimento para a equipe (Bia não conseguiu resolver)",
-    `Cliente: ${contact?.name ?? "não informado"}`,
-    `WhatsApp: ${formatBrPhone(customerDigits)} — https://wa.me/${customerDigits}`,
-    open.length ? `Mensalidades em aberto: ${open.length} (total ${brl(total)})` : "Sem dívida em aberto no sistema.",
-    "",
-    "Últimas mensagens:",
-    // deno-lint-ignore no-explicit-any
-    ...((recent ?? []) as any[])
-      .reverse()
-      .filter((m) => (m.content ?? "").trim())
-      .map((m) => `${m.sender_type === "Contact" ? "Cliente" : "Bia"}: ${String(m.content).trim().slice(0, 300)}`),
-  ];
-  await sendText({ ...opts.evolution, number: team, text: lines.join("\n") });
+  // deno-lint-ignore no-explicit-any
+  const lastMessages = ((recent ?? []) as any[])
+    .reverse()
+    .filter((m) => (m.content ?? "").trim())
+    .map((m) => `${m.sender_type === "Contact" ? "Cliente" : "Bia"}: ${String(m.content).trim().slice(0, 300)}`);
 
+  const notified = await notifyTeam(admin, {
+    accountId: opts.accountId,
+    origin: "WhatsApp",
+    customerPhone: opts.number,
+    contactId: opts.contactId,
+    lastMessages,
+    sender: opts.evolution,
+  });
+
+  const attrs = (conv?.additional_attributes ?? {}) as Record<string, unknown>;
   await admin
     .from("conversations")
-    .update({ additional_attributes: { ...attrs, handoff_notified_at: new Date().toISOString() } })
+    .update({
+      additional_attributes: {
+        ...attrs,
+        ai_paused: true,
+        handoff_notified_at: new Date().toISOString(),
+        handoff_team_notified: notified,
+      },
+    })
     .eq("id", opts.conversationId);
 }

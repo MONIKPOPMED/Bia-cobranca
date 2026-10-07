@@ -355,9 +355,32 @@ Deno.serve(async (req) => {
                 },
               },
             },
+            {
+              // No call transfer: POPMED's team takes over on WhatsApp
+              // (HANDOFF_RULE_VOICE). Function kept its old name.
+              type: "webhook",
+              name: "passar_para_equipe",
+              description:
+                "Passa o caso para a equipe, que vai chamar o cliente pelo WhatsApp. Use quando não conseguir resolver (cliente contesta, pede cancelamento, pede algo fora das regras ou insiste em falar com alguém). Antes, diga que vai passar para alguém da equipe. Depois de chamar, despeça-se e chame end_call.",
+              api_schema: {
+                url: `${nexusBase}/functions/v1/voice-transfer-tool`,
+                method: "POST",
+                request_headers: {
+                  ...(elWebhookSecret ? { "x-el-webhook-secret": elWebhookSecret } : {}),
+                  "x-conversation-id": "{{system__conversation_id}}",
+                },
+                request_body_schema: {
+                  type: "object",
+                  properties: {
+                    motivo: {
+                      type: "string",
+                      description: "Resumo curto do que o cliente precisa (ex.: contestou o valor; quer cancelar).",
+                    },
+                  },
+                },
+              },
+            },
           ],
-          // No transfer tool on purpose: POPMED's team answers on WhatsApp, so
-          // the agent dictates that number instead (HANDOFF_RULE_VOICE).
           tool_ids: [],
           // Lets the agent hang up after the goodbye — without it the 30/09
           // test call kept asking "você ainda está na linha?".

@@ -1,11 +1,13 @@
 // Como a Bia passa o atendimento para a equipe — anexado depois do prompt da
 // persona para valer mesmo com prompt customizado.
 //
-// Regra da POPMED (07/10): a equipe atende pelo WhatsApp do número de
-// suporte (company_settings.support_phone, hoje +5548996975445).
-//   - Ligação: a Bia não transfere; pede para o cliente anotar esse WhatsApp.
-//   - WhatsApp: a Bia marca a resposta com HANDOFF_MARKER e o
-//     persona-auto-reply manda o contato ao cliente e um resumo à equipe.
+// Regra da POPMED (07/10): quando a Bia não resolve, a equipe assume pelo
+// WhatsApp do número de suporte (company_settings.support_phone, hoje
+// +5548996975445): recebe um resumo (_shared/team-handoff.ts) e chama o cliente.
+//   - Ligação: sem transferência; ferramenta passar_para_equipe
+//     (voice-transfer-tool) avisa a equipe e a Bia encerra a ligação.
+//   - WhatsApp: a Bia marca a resposta com HANDOFF_MARKER; o
+//     persona-auto-reply avisa a equipe e pausa a Bia na conversa.
 
 export const SUPPORT_HOURS_TEXT =
   "de segunda a sexta-feira, exceto feriados, das 9h às 12h30 e das 13h30 às 17h";
@@ -38,8 +40,8 @@ const WHEN = `- Tente resolver tudo você mesma. Só passe para a equipe quando 
 export const HANDOFF_RULE_VOICE = `# QUANDO NÃO CONSEGUIR RESOLVER (LIGAÇÃO)
 ${WHEN}
 ${NEVER_HUMAN}
-- Não transfira a ligação. Diga que alguém da nossa equipe vai ajudar pelo WhatsApp e peça para a pessoa anotar o número: {{whatsapp_equipe_falado}}. Fale devagar, repita o número uma vez e pergunte se conseguiu anotar.
-- Informe o horário de atendimento da equipe: ${SUPPORT_HOURS_TEXT}.`;
+- Não transfira a ligação e não peça para anotar número. Diga que vai passar o caso para alguém da nossa equipe, que vai continuar o atendimento pelo WhatsApp, no horário de atendimento (${SUPPORT_HOURS_TEXT}).
+- Chame a ferramenta \`passar_para_equipe\` com um resumo curto do que o cliente precisa. Depois despeça-se e chame \`end_call\`.`;
 
 /** Marca que o persona-auto-reply procura na resposta do WhatsApp. */
 export const HANDOFF_MARKER = "[[EQUIPE]]";
@@ -48,8 +50,8 @@ export const HANDOFF_MARKER = "[[EQUIPE]]";
 export const HANDOFF_RULE_WHATSAPP = `# QUANDO PASSAR O ATENDIMENTO PARA A EQUIPE (WHATSAPP)
 ${WHEN}
 ${NEVER_HUMAN}
-- Diga que vai passar o atendimento para alguém da equipe que poderá ajudar, e informe o horário de atendimento: ${SUPPORT_HOURS_TEXT}.
-- NÃO escreva o número da equipe. Termine essa mensagem com o marcador ${HANDOFF_MARKER} — o sistema envia ao cliente o contato da equipe e avisa a equipe.`;
+- Diga que vai passar o atendimento para alguém da nossa equipe, que vai continuar com o cliente pelo WhatsApp, e informe o horário de atendimento: ${SUPPORT_HOURS_TEXT}.
+- NÃO escreva o número da equipe. Termine essa mensagem com o marcador ${HANDOFF_MARKER} — o sistema avisa a equipe, que chama o cliente, e você para de responder nesta conversa.`;
 
 /** "+5548996975445" → "5548996975445" (null if not a plausible E.164). */
 export function supportDigits(phone: string | null | undefined): string | null {
