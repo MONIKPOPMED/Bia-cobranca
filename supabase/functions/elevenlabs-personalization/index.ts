@@ -14,7 +14,7 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.74.0";
 import { buildSystemPromptWithGuardrails } from "../_shared/voice/collection-guardrails.ts";
-import { HANDOFF_RULE } from "../_shared/handoff.ts";
+import { HANDOFF_RULE_VOICE } from "../_shared/handoff.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -204,7 +204,7 @@ Deno.serve(async (req) => {
   // SEMPRE contenha o header de regras de cobrança (valor correto, tetos,
   // compliance), mesmo se a persona tiver um sysprompt curto sem variáveis.
   const promptWithGuardrails = buildSystemPromptWithGuardrails(personaSystemPrompt);
-  const enrichedPrompt = `${promptWithGuardrails}${contextBlock}\n\n${HANDOFF_RULE}`;
+  const enrichedPrompt = `${promptWithGuardrails}${contextBlock}\n\n${HANDOFF_RULE_VOICE}`;
 
   // first_message: respeita o opener cadastrado na persona — só substitui
   // as variáveis dinâmicas. O aviso de gravação fica no system_prompt

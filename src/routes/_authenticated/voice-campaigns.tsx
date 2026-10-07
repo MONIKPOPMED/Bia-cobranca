@@ -453,7 +453,6 @@ function CreateCampaignDialog({
   const [systemPrompt, setSystemPrompt] = useState("");
   const [personaId, setPersonaId] = useState<string>("");
   const [phoneNumberId, setPhoneNumberId] = useState<string>("");
-  const [transferTo, setTransferTo] = useState("");
   const [voicemailDetection, setVoicemailDetection] = useState(true);
   const [recordCall, setRecordCall] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -592,7 +591,7 @@ function CreateCampaignDialog({
     }
 
     const rules: EscalationRule[] = [];
-    rules.push({ trigger: "explicit_request", action: "transfer_to_human", target: transferTo || undefined });
+    rules.push({ trigger: "explicit_request", action: "transfer_to_human" });
 
     try {
       const res = await startVoiceCampaign({
@@ -969,17 +968,10 @@ function CreateCampaignDialog({
               </div>
             )}
 
-            <div>
-              <Label>Transferir para (E.164)</Label>
-              <Input
-                value={transferTo}
-                onChange={(e) => setTransferTo(e.target.value)}
-                placeholder="+551199999999"
-              />
-              <p className="mt-1 text-[10px] text-muted-foreground">
-                Quando o cliente pede humano, a ligação é transferida pra este número.
-              </p>
-            </div>
+            <p className="rounded-md border border-white/[0.06] px-3 py-2 text-[11px] text-muted-foreground">
+              A ligação não é transferida: quando a Bia não consegue resolver, ela pede para o cliente
+              anotar o WhatsApp da equipe (telefone de suporte em Configurações).
+            </p>
 
             <div className="flex items-center justify-between rounded-md border border-white/[0.06] px-3 py-2">
               <Label className="text-xs">Detectar secretária eletrônica</Label>
