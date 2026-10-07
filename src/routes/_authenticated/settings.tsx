@@ -292,7 +292,7 @@ function CompanyDataCard() {
   return (
     <Card
       title="Dados da empresa (usados pela IA em ligação)"
-      desc="O agente de voz usa esses dados para se identificar, transferir para humano e respeitar limites de negociação. Configure aqui depois do onboarding."
+      desc="A Bia usa esses dados para se identificar, passar o WhatsApp da equipe quando não consegue resolver e respeitar os limites de negociação."
     >
       <div className="space-y-4">
         <div>
@@ -313,16 +313,16 @@ function CompanyDataCard() {
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div>
             <label className="mb-1.5 block text-[11px] font-medium text-muted-foreground">
-              Telefone de suporte (escalação humana)
+              WhatsApp da equipe
             </label>
             <input
               value={data.support_phone ?? ""}
               onChange={(e) => setData({ ...data, support_phone: e.target.value || null })}
-              placeholder="(11) 99999-0000"
+              placeholder="+5548999999999"
               className={fieldClass}
             />
             <p className="mt-1 text-[11px] text-muted-foreground">
-              Quando o devedor pedir um humano, a IA transfere pra cá.
+              Quando não consegue resolver, a Bia passa este número ao cliente, e a equipe recebe aqui o resumo do caso.
             </p>
           </div>
 
