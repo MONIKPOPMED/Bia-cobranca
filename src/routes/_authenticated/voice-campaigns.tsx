@@ -969,8 +969,8 @@ function CreateCampaignDialog({
             )}
 
             <p className="rounded-md border border-white/[0.06] px-3 py-2 text-[11px] text-muted-foreground">
-              A ligação não é transferida: quando a Bia não consegue resolver, ela pede para o cliente
-              anotar o WhatsApp da equipe (telefone de suporte em Configurações).
+              A ligação não é transferida: quando a Bia não consegue resolver, a equipe recebe o resumo no
+              WhatsApp da equipe (em Configurações) e chama o cliente.
             </p>
 
             <div className="flex items-center justify-between rounded-md border border-white/[0.06] px-3 py-2">

@@ -1,30 +1,26 @@
-// Server tool "transferir_para_equipe" do agente ElevenLabs: quando o
-// cliente pede para falar com alguém (ou a Bia precisa passar o caso),
-// redireciona a ligação da Twilio para o número da equipe.
+// Server tool "passar_para_equipe" do agente ElevenLabs (regra da POPMED,
+// 07/10): quando a Bia não consegue resolver na ligação, a equipe recebe o
+// resumo no WhatsApp da equipe (company_settings.support_phone) e chama o
+// cliente. A ligação NÃO é transferida — a Bia se despede e encerra.
 //
-// Destino: "Transferir para" da campanha (escalation_rules
-// transfer_to_human) ou, fora de campanha, company_settings.support_phone.
-// Fora do horário da equipe não transfere: devolve ao agente a instrução de
-// informar o horário.
+// (O nome da função ficou voice-transfer-tool porque já estava publicada
+// com verify_jwt = false.)
 //
-// A transferência em si é do voice-escalate (Twilio <Dial>), chamado com a
-// service role.
-//
+// Body: { motivo?: string }
 // Headers: x-el-webhook-secret, x-conversation-id (injetado pela EL)
 // Auth: x-el-webhook-secret. Deploy with verify_jwt = false (EL sends no JWT).
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.74.0";
-import { isWithinSupportHours, SUPPORT_HOURS_TEXT } from "../_shared/handoff.ts";
+import { SUPPORT_HOURS_TEXT } from "../_shared/handoff.ts";
+import { notifyTeam } from "../_shared/team-handoff.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "*, x-el-webhook-secret, x-conversation-id",
 };
 
-const E164 = /^\+[1-9]\d{7,14}$/;
-
-const TELL_HOURS =
-  `Não transfira. Diga que alguém da equipe vai entrar em contato e informe o horário de atendimento: ${SUPPORT_HOURS_TEXT}.`;
+const SAY_GOODBYE =
+  `Diga que alguém da nossa equipe vai continuar o atendimento pelo WhatsApp, no horário de atendimento (${SUPPORT_HOURS_TEXT}), despeça-se e chame end_call.`;
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
@@ -36,66 +32,46 @@ Deno.serve(async (req) => {
     return new Response("Forbidden", { status: 403, headers: corsHeaders });
   }
 
+  const body = await req.json().catch(() => ({})) as { motivo?: string };
   const conversationId = req.headers.get("x-conversation-id") ?? "";
   if (!conversationId || conversationId.startsWith("{{")) {
-    return j({ ok: false, message: TELL_HOURS, error: "missing conversation id" });
+    return j({ ok: false, message: SAY_GOODBYE, error: "missing conversation id" });
   }
 
-  const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-  const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-  const admin = createClient(supabaseUrl, serviceKey);
-
+  const admin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
   const { data: call } = await admin
     .from("voice_calls")
-    .select("id, account_id, metadata")
+    .select("id, account_id, direction, from_number, to_number, metadata")
     .eq("source_id", conversationId)
     .maybeSingle();
-  if (!call) return j({ ok: false, message: TELL_HOURS, error: "call not found" });
+  if (!call) return j({ ok: false, message: SAY_GOODBYE, error: "call not found" });
 
-  if (!isWithinSupportHours()) {
-    return j({ ok: false, message: TELL_HOURS, reason: "fora_do_horario" });
+  const customerPhone = String(call.direction).startsWith("outbound") ? call.to_number : call.from_number;
+  let notified = false;
+  try {
+    notified = await notifyTeam(admin, {
+      accountId: call.account_id,
+      origin: "Ligação",
+      customerPhone: customerPhone ?? "",
+      contactId: call.metadata?.contact_id ?? null,
+      reason: body.motivo ?? null,
+    });
+  } catch (err) {
+    console.error("[voice-transfer-tool] notifyTeam failed", err);
   }
 
-  const target = await resolveTarget(admin, call);
-  if (!target) {
-    console.warn("[voice-transfer-tool] no transfer number configured", call.account_id);
-    return j({ ok: false, message: TELL_HOURS, reason: "sem_numero" });
-  }
+  await admin
+    .from("voice_calls")
+    .update({
+      metadata: {
+        ...(call.metadata ?? {}),
+        handoff: { reason: body.motivo ?? null, team_notified: notified, at: new Date().toISOString() },
+      },
+    })
+    .eq("id", call.id);
 
-  const res = await fetch(`${supabaseUrl}/functions/v1/voice-escalate`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${serviceKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ voice_call_id: call.id, reason: "cliente_pediu_equipe", target_phone: target }),
-  });
-  if (!res.ok) {
-    console.error("[voice-transfer-tool] voice-escalate failed", res.status, await res.text().catch(() => ""));
-    return j({ ok: false, message: TELL_HOURS, reason: "falha_transferencia" });
-  }
-  return j({ ok: true, message: "A ligação está sendo transferida para a equipe agora." });
+  return j({ ok: notified, message: SAY_GOODBYE });
 });
-
-// deno-lint-ignore no-explicit-any
-async function resolveTarget(admin: any, call: { account_id: string; metadata: any }): Promise<string | null> {
-  const campaignId = call.metadata?.campaign_id;
-  if (campaignId) {
-    const { data: campaign } = await admin
-      .from("voice_campaigns")
-      .select("escalation_rules")
-      .eq("id", campaignId)
-      .maybeSingle();
-    const rules = Array.isArray(campaign?.escalation_rules) ? campaign.escalation_rules : [];
-    // deno-lint-ignore no-explicit-any
-    const rule = rules.find((r: any) => r?.action === "transfer_to_human" && E164.test(String(r?.target ?? "")));
-    if (rule) return String(rule.target);
-  }
-  const { data: settings } = await admin
-    .from("company_settings")
-    .select("support_phone")
-    .eq("account_id", call.account_id)
-    .maybeSingle();
-  const phone = String(settings?.support_phone ?? "").replace(/[^\d+]/g, "");
-  return E164.test(phone) ? phone : null;
-}
 
 function timingSafeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;

@@ -292,7 +292,7 @@ function CompanyDataCard() {
   return (
     <Card
       title="Dados da empresa (usados pela IA em ligação)"
-      desc="A Bia usa esses dados para se identificar, passar o WhatsApp da equipe quando não consegue resolver e respeitar os limites de negociação."
+      desc="A Bia usa esses dados para se identificar, passar o caso para a equipe quando não consegue resolver e respeitar os limites de negociação."
     >
       <div className="space-y-4">
         <div>
@@ -322,7 +322,7 @@ function CompanyDataCard() {
               className={fieldClass}
             />
             <p className="mt-1 text-[11px] text-muted-foreground">
-              Quando não consegue resolver, a Bia passa este número ao cliente, e a equipe recebe aqui o resumo do caso.
+              Quando a Bia não consegue resolver, a equipe recebe aqui o resumo do caso e chama o cliente.
             </p>
           </div>
 

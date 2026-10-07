@@ -14,6 +14,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.74.0";
 import { sendText } from "../_shared/evolution/index.ts";
 import { phoneVariants } from "../_shared/phone.ts";
 import { PAYMENT_LINKS, type PaymentMethod } from "../_shared/payment-links.ts";
+import { notifyTeam } from "../_shared/team-handoff.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -82,9 +83,25 @@ Deno.serve(async (req) => {
       .update({ metadata: { ...(call.metadata ?? {}), payment_link: { ...payment_link, metodo, at: new Date().toISOString() } } })
       .eq("id", call.id);
 
+  // The agent tells the customer the team will send the link — make sure the
+  // team actually hears about it.
+  const askTeam = (why: string) =>
+    notifyTeam(admin, {
+      accountId: call.account_id,
+      origin: "Ligação",
+      customerPhone: customerPhone ?? "",
+      contactId: contact?.id ?? null,
+      reason: `Cliente quer pagar por ${metodo === "pix" ? "PIX" : "cartão"} — enviar o link de pagamento (${why}).`,
+    }).catch((err) => {
+      console.error("[voice-send-payment-link] notifyTeam failed", err);
+      return false;
+    });
+
   if (openCount !== 1) {
     // No fixed link for 0 or 2+ installments — the team follows up.
-    await recordOutcome({ sent: false, reason: openCount ? "mais_de_uma_parcela" : "sem_divida", open_count: openCount ?? 0 });
+    const why = openCount ? `${openCount} mensalidades em aberto, sem link automático` : "sem dívida em aberto no sistema";
+    const teamNotified = await askTeam(why);
+    await recordOutcome({ sent: false, reason: openCount ? "mais_de_uma_parcela" : "sem_divida", open_count: openCount ?? 0, team_notified: teamNotified });
     return j({ ok: false, message: TEAM_WILL_SEND });
   }
 
@@ -127,7 +144,8 @@ Deno.serve(async (req) => {
     return j({ ok: true, message: "Link enviado pelo WhatsApp. Diga ao cliente que o link já chegou no WhatsApp dele." });
   } catch (err) {
     console.error("[voice-send-payment-link] Evolution send failed", err);
-    await recordOutcome({ sent: false, reason: "falha_envio" });
+    const teamNotified = await askTeam("falha ao enviar o link automático");
+    await recordOutcome({ sent: false, reason: "falha_envio", team_notified: teamNotified });
     return j({ ok: false, message: TEAM_WILL_SEND });
   }
 });
