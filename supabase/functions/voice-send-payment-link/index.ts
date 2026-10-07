@@ -15,6 +15,7 @@ import { sendText } from "../_shared/evolution/index.ts";
 import { phoneVariants } from "../_shared/phone.ts";
 import { PAYMENT_LINKS, type PaymentMethod } from "../_shared/payment-links.ts";
 import { notifyTeam } from "../_shared/team-handoff.ts";
+import { findToolCall } from "../_shared/voice/tool-call.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -34,7 +35,7 @@ Deno.serve(async (req) => {
     return new Response("Forbidden", { status: 403, headers: corsHeaders });
   }
 
-  let body: { metodo?: string };
+  let body: { metodo?: string; conversation_id?: string };
   try {
     body = await req.json();
   } catch {
@@ -45,18 +46,8 @@ Deno.serve(async (req) => {
     return j({ ok: false, message: "Pergunte se o cliente prefere PIX ou cartão e chame de novo." }, 400);
   }
 
-  const conversationId = req.headers.get("x-conversation-id") ?? "";
-  if (!conversationId || conversationId.startsWith("{{")) {
-    return j({ ok: false, message: TEAM_WILL_SEND, error: "missing conversation id" });
-  }
-
   const admin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
-
-  const { data: call } = await admin
-    .from("voice_calls")
-    .select("id, account_id, direction, from_number, to_number, metadata")
-    .eq("source_id", conversationId)
-    .maybeSingle();
+  const call = await findToolCall(admin, req, body, "voice-send-payment-link");
   if (!call) return j({ ok: false, message: TEAM_WILL_SEND, error: "call not found" });
 
   const customerPhone = String(call.direction).startsWith("outbound") ? call.to_number : call.from_number;

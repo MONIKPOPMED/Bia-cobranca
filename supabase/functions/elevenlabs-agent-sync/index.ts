@@ -235,6 +235,11 @@ Deno.serve(async (req) => {
   // Antes tínhamos `conversational_config` E `conversation_config` duplicados; EL
   // descartava silenciosamente o `conversational_config` (incluindo personalization
   // webhook, dynamic var defaults, turn config, first_message). Agora tudo num lugar só.
+  // Server tools get the call's ids filled in by EL (not by the LLM): a
+  // {variable_name} header plus a dynamic_variable body field.
+  const dynVar = (variable_name: string) => ({ variable_name });
+  const conversationIdField = { type: "string", dynamic_variable: "system__conversation_id" };
+
   const agentBody = {
     name: `Nexus: ${persona.name}`,
     conversation_config: {
@@ -291,17 +296,19 @@ Deno.serve(async (req) => {
                 method: "POST",
                 request_headers: {
                   ...(elWebhookSecret ? { "x-el-webhook-secret": elWebhookSecret } : {}),
-                  // EL injeta automaticamente as system/dynamic variables nos headers
-                  // — esse é o canal correto pra passar IDs sem o LLM precisar lembrar.
-                  "x-conversation-id": "{{system__conversation_id}}",
-                  "x-agent-id": "{{system__agent_id}}",
-                  "x-debt-id": "{{debt_id}}",
-                  "x-campaign-contact-id": "{{campaign_contact_id}}",
+                  // EL fills {variable_name} headers at runtime — plain "{{…}}"
+                  // strings seem to arrive literally (07/10 passar_para_equipe test).
+                  "x-conversation-id": dynVar("system__conversation_id"),
+                  "x-agent-id": dynVar("system__agent_id"),
+                  "x-debt-id": dynVar("debt_id"),
+                  "x-campaign-contact-id": dynVar("campaign_contact_id"),
                 },
                 request_body_schema: {
                   type: "object",
                   required: ["valor_negociado"],
                   properties: {
+                    conversation_id: conversationIdField,
+                    debt_id: { type: "string", dynamic_variable: "debt_id" },
                     valor_negociado: {
                       type: "number",
                       description:
@@ -340,12 +347,13 @@ Deno.serve(async (req) => {
                 method: "POST",
                 request_headers: {
                   ...(elWebhookSecret ? { "x-el-webhook-secret": elWebhookSecret } : {}),
-                  "x-conversation-id": "{{system__conversation_id}}",
+                  "x-conversation-id": dynVar("system__conversation_id"),
                 },
                 request_body_schema: {
                   type: "object",
                   required: ["metodo"],
                   properties: {
+                    conversation_id: conversationIdField,
                     metodo: {
                       type: "string",
                       enum: ["pix", "cartao"],
@@ -367,11 +375,12 @@ Deno.serve(async (req) => {
                 method: "POST",
                 request_headers: {
                   ...(elWebhookSecret ? { "x-el-webhook-secret": elWebhookSecret } : {}),
-                  "x-conversation-id": "{{system__conversation_id}}",
+                  "x-conversation-id": dynVar("system__conversation_id"),
                 },
                 request_body_schema: {
                   type: "object",
                   properties: {
+                    conversation_id: conversationIdField,
                     motivo: {
                       type: "string",
                       description: "Resumo curto do que o cliente precisa (ex.: contestou o valor; quer cancelar).",
