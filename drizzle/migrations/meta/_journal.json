@@ -71,6 +71,13 @@
       "when": 1790961881070,
       "tag": "0009_configure_voice_campaign_dispatch_cron",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1791393402084,
+      "tag": "0010_voice_dispatch_cron_secret",
+      "breakpoints": true
     }
   ]
 }
