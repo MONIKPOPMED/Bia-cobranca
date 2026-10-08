@@ -80,7 +80,8 @@ export async function notifyTeam(
 
   const lines = [
     `🔔 Caso para a equipe — a Bia não conseguiu resolver (${opts.origin})`,
-    `Cliente: ${contact?.name ?? "não cadastrado"}`,
+    // Full name exactly as in the Carteira (the Bia only speaks the first name).
+    `Nome completo: ${contact?.name?.trim() || "não cadastrado na Carteira"}`,
     `WhatsApp: ${formatBrPhone(customerDigits)} — https://wa.me/${customerDigits}`,
     open.length ? `Mensalidades em aberto: ${open.length} (total ${brl(total)})` : "Sem dívida em aberto no sistema.",
   ];

@@ -34,14 +34,19 @@ export function isWithinSupportHours(now = new Date()): boolean {
 const NEVER_HUMAN =
   `- NUNCA diga "atendente humano", "humano", "pessoa real", nem que você é uma IA/robô. Diga "alguém da nossa equipe".`;
 
-const WHEN = `- Tente resolver tudo você mesma. Só passe para a equipe quando não conseguir: o cliente contesta a cobrança ou o valor, pede cancelamento, pede algo fora das regras, ou insiste em falar com alguém.`;
+const WHEN = `- Tente resolver tudo você mesma. Só passe para a equipe quando não conseguir: o cliente contesta a cobrança ou o valor, pede cancelamento, pede algo fora das regras, ou pede para falar com alguém.
+- Se o cliente pedir para falar com alguém da equipe, faça no máximo UMA pergunta para entender o caso; se ele repetir o pedido, passe para a equipe na hora — não insista.`;
 
 /** Ligação (elevenlabs-agent-sync / elevenlabs-personalization). */
 export const HANDOFF_RULE_VOICE = `# QUANDO NÃO CONSEGUIR RESOLVER (LIGAÇÃO)
 ${WHEN}
 ${NEVER_HUMAN}
-- Não transfira a ligação e não peça para anotar número. Diga que vai passar o caso para alguém da nossa equipe, que vai continuar o atendimento pelo WhatsApp, no horário de atendimento (${SUPPORT_HOURS_TEXT}), e avise que a mensagem vai chegar de um número com {{whatsapp_equipe_aviso}}.
-- Chame a ferramenta \`passar_para_equipe\` com um resumo curto do que o cliente precisa. Depois despeça-se e chame \`end_call\`.`;
+- Não transfira a ligação e não peça para anotar número.
+- Siga esta ordem:
+  1. Chame a ferramenta \`passar_para_equipe\` com um resumo curto do que o cliente precisa — ANTES de se despedir.
+  2. Na mesma fala, diga: "Vou passar seu caso para alguém da nossa equipe, que vai continuar o atendimento com você pelo WhatsApp. A mensagem vai chegar de um número com {{whatsapp_equipe_aviso}}." É obrigatório dizer o DDD e o final do número.
+  3. Informe o horário de atendimento (${SUPPORT_HOURS_TEXT}) e pergunte se pode ajudar em mais alguma coisa.
+  4. Depois da despedida, chame \`end_call\`.`;
 
 /** Marca que o persona-auto-reply procura na resposta do WhatsApp. */
 export const HANDOFF_MARKER = "[[EQUIPE]]";

@@ -369,7 +369,7 @@ Deno.serve(async (req) => {
               type: "webhook",
               name: "passar_para_equipe",
               description:
-                "Passa o caso para a equipe, que vai chamar o cliente pelo WhatsApp. Use quando não conseguir resolver (cliente contesta, pede cancelamento, pede algo fora das regras ou insiste em falar com alguém). Antes, diga que vai passar para alguém da equipe. Depois de chamar, despeça-se e chame end_call.",
+                "Passa o caso para a equipe, que vai chamar o cliente pelo WhatsApp. Use quando não conseguir resolver (cliente contesta, pede cancelamento, pede algo fora das regras ou pede para falar com alguém). Chame ANTES de se despedir; em seguida diga ao cliente que a equipe vai continuar pelo WhatsApp e de qual número (DDD e final, como na resposta da ferramenta). Só depois se despeça e chame end_call.",
               api_schema: {
                 url: `${nexusBase}/functions/v1/voice-transfer-tool`,
                 method: "POST",
