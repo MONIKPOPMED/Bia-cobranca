@@ -7,3 +7,4 @@
 - [ ] Authenticate the WhatsApp campaign dispatcher with the Lovable cron secret
 - [ ] Recreate the five-minute production cron job with secure authentication
 - [ ] Confirm the published dispatcher responds successfully without changing campaign logic
+- [ ] Investigar por que transferência não chegou ao 5445 (voice-transfer-tool sem logs de execução)
