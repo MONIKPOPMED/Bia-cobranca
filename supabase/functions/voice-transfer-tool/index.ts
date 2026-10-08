@@ -6,13 +6,14 @@
 // (O nome da função ficou voice-transfer-tool porque já estava publicada
 // com verify_jwt = false.)
 //
-// Body: { motivo?: string }
+// Body: { motivo?: string, conversation_id (preenchido pela EL) }
 // Headers: x-el-webhook-secret, x-conversation-id (injetado pela EL)
 // Auth: x-el-webhook-secret. Deploy with verify_jwt = false (EL sends no JWT).
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.74.0";
-import { SUPPORT_HOURS_TEXT } from "../_shared/handoff.ts";
-import { notifyTeam } from "../_shared/team-handoff.ts";
+import { spokenAreaAndEnding, SUPPORT_HOURS_TEXT } from "../_shared/handoff.ts";
+import { loadTeamWhatsApp, notifyTeam } from "../_shared/team-handoff.ts";
+import { findToolCall } from "../_shared/voice/tool-call.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -32,18 +33,9 @@ Deno.serve(async (req) => {
     return new Response("Forbidden", { status: 403, headers: corsHeaders });
   }
 
-  const body = await req.json().catch(() => ({})) as { motivo?: string };
-  const conversationId = req.headers.get("x-conversation-id") ?? "";
-  if (!conversationId || conversationId.startsWith("{{")) {
-    return j({ ok: false, message: SAY_GOODBYE, error: "missing conversation id" });
-  }
-
+  const body = await req.json().catch(() => ({})) as { motivo?: string; conversation_id?: string };
   const admin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
-  const { data: call } = await admin
-    .from("voice_calls")
-    .select("id, account_id, direction, from_number, to_number, metadata")
-    .eq("source_id", conversationId)
-    .maybeSingle();
+  const call = await findToolCall(admin, req, body, "voice-transfer-tool");
   if (!call) return j({ ok: false, message: SAY_GOODBYE, error: "call not found" });
 
   const customerPhone = String(call.direction).startsWith("outbound") ? call.to_number : call.from_number;
@@ -70,7 +62,10 @@ Deno.serve(async (req) => {
     })
     .eq("id", call.id);
 
-  return j({ ok: notified, message: SAY_GOODBYE });
+  console.log(`[voice-transfer-tool] call=${call.id} team_notified=${notified}`);
+  const team = await loadTeamWhatsApp(admin, call.account_id);
+  const fromWhere = team ? ` Avise que a mensagem vai chegar de um número com ${spokenAreaAndEnding(team)}.` : "";
+  return j({ ok: notified, message: SAY_GOODBYE + fromWhere });
 });
 
 function timingSafeEqual(a: string, b: string): boolean {

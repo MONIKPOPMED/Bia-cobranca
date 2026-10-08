@@ -40,7 +40,7 @@ const WHEN = `- Tente resolver tudo você mesma. Só passe para a equipe quando 
 export const HANDOFF_RULE_VOICE = `# QUANDO NÃO CONSEGUIR RESOLVER (LIGAÇÃO)
 ${WHEN}
 ${NEVER_HUMAN}
-- Não transfira a ligação e não peça para anotar número. Diga que vai passar o caso para alguém da nossa equipe, que vai continuar o atendimento pelo WhatsApp, no horário de atendimento (${SUPPORT_HOURS_TEXT}).
+- Não transfira a ligação e não peça para anotar número. Diga que vai passar o caso para alguém da nossa equipe, que vai continuar o atendimento pelo WhatsApp, no horário de atendimento (${SUPPORT_HOURS_TEXT}), e avise que a mensagem vai chegar de um número com {{whatsapp_equipe_aviso}}.
 - Chame a ferramenta \`passar_para_equipe\` com um resumo curto do que o cliente precisa. Depois despeça-se e chame \`end_call\`.`;
 
 /** Marca que o persona-auto-reply procura na resposta do WhatsApp. */
@@ -68,6 +68,26 @@ export function formatBrPhone(digits: string): string {
 }
 
 const DIGIT_WORDS = ["zero", "um", "dois", "três", "quatro", "cinco", "seis", "sete", "oito", "nove"];
+const TEENS = ["dez", "onze", "doze", "treze", "catorze", "quinze", "dezesseis", "dezessete", "dezoito", "dezenove"];
+const TENS = ["", "", "vinte", "trinta", "quarenta", "cinquenta", "sessenta", "setenta", "oitenta", "noventa"];
+
+/** "48" → "quarenta e oito" (two-digit area codes). */
+function spokenTwoDigits(n: number): string {
+  if (n < 10) return DIGIT_WORDS[n];
+  if (n < 20) return TEENS[n - 10];
+  const t = TENS[Math.floor(n / 10)];
+  return n % 10 ? `${t} e ${DIGIT_WORDS[n % 10]}` : t;
+}
+
+/**
+ * "5548996975445" → "DDD quarenta e oito, final cinco, quatro, quatro, cinco" —
+ * how the Bia tells the customer which number the team will write from.
+ */
+export function spokenAreaAndEnding(digits: string): string {
+  const local = digits.startsWith("55") ? digits.slice(2) : digits;
+  const ending = [...local.slice(-4)].map((d) => DIGIT_WORDS[Number(d)]).join(", ");
+  return `DDD ${spokenTwoDigits(Number(local.slice(0, 2)))}, final ${ending}`;
+}
 
 /**
  * "5548996975445" → "quatro, oito... nove, nove, seis, nove, sete... cinco, quatro, quatro, cinco".
