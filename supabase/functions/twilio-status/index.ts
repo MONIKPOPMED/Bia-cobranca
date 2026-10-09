@@ -92,7 +92,7 @@ Deno.serve(async (req) => {
       .from("voice_calls")
       .update(updates)
       .eq("provider_call_sid", callSid)
-      .select("id, source_id, recording_storage_path, transcription_status")
+      .select("id, source_id, recording_storage_path, transcription_status, metadata")
       .maybeSingle();
 
     if (error) console.error("[twilio-status] update error", error);
@@ -102,6 +102,23 @@ Deno.serve(async (req) => {
     // Fire-and-forget: não bloqueia a resposta ao Twilio.
     const isTerminal =
       mapped === "completed" || mapped === "no_answer" || mapped === "busy" || mapped === "canceled";
+    // Campaign calls placed through Twilio (voice-campaign-dispatch →
+    // dispatchViaTwilio) never had their contact row closed: it stayed
+    // "placed" and the campaign stayed "running" forever (09/10 test).
+    const campaignContactId = (updated?.metadata as any)?.campaign_contact_id;
+    if (updated?.id && campaignContactId && (isTerminal || mapped === "failed")) {
+      try {
+        await closeCampaignContact(supabase, {
+          contactRowId: campaignContactId,
+          campaignId: (updated.metadata as any)?.campaign_id,
+          answered: mapped === "completed",
+          reason: mapped,
+        });
+      } catch (err) {
+        console.error("[twilio-status] campaign contact update failed", err);
+      }
+    }
+
     if (updated?.id && isTerminal) {
       const baseUrl = supabaseUrl;
       const key = serviceKey;
@@ -128,3 +145,48 @@ Deno.serve(async (req) => {
     return new Response("error", { status: 500, headers: corsHeaders });
   }
 });
+
+const IN_FLIGHT = ["queued", "placed", "ringing", "connected", "escalated"];
+
+/**
+ * Closes a campaign contact row when its call ends and completes the
+ * campaign once nothing is left in flight (same rule as the dispatcher's
+ * maybeCompleteCampaign). Idempotent: only rows still in flight move.
+ */
+async function closeCampaignContact(
+  // deno-lint-ignore no-explicit-any
+  supabase: any,
+  opts: { contactRowId: number | string; campaignId?: string; answered: boolean; reason: string },
+) {
+  const { data: closed } = await supabase
+    .from("voice_campaign_contacts")
+    .update({
+      status: opts.answered ? "completed" : "failed",
+      finished_at: new Date().toISOString(),
+      ...(opts.answered ? {} : { last_error: `call ${opts.reason}` }),
+    })
+    .eq("id", opts.contactRowId)
+    .in("status", IN_FLIGHT)
+    .select("campaign_id")
+    .maybeSingle();
+  const campaignId = closed?.campaign_id ?? opts.campaignId;
+  if (!closed || !campaignId) return;
+
+  await supabase.rpc("bump_voice_campaign_totals", {
+    p_campaign_id: campaignId,
+    ...(opts.answered ? { p_connected: 1 } : { p_failed: 1 }),
+  });
+
+  const { count: pending } = await supabase
+    .from("voice_campaign_contacts")
+    .select("id", { count: "exact", head: true })
+    .eq("campaign_id", campaignId)
+    .in("status", IN_FLIGHT);
+  if ((pending ?? 0) === 0) {
+    await supabase
+      .from("voice_campaigns")
+      .update({ status: "completed", finished_at: new Date().toISOString() })
+      .eq("id", campaignId)
+      .eq("status", "running");
+  }
+}

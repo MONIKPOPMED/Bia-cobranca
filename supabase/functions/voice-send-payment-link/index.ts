@@ -121,7 +121,8 @@ Deno.serve(async (req) => {
   const how = metodo === "pix" ? "por PIX" : "no cartão de crédito";
   const text =
     `${hello} Aqui é a Bia, da ${settings?.company_name ?? "POPMED"}. ` +
-    `Como combinamos na ligação, segue o link para pagar sua mensalidade ${how}:\n${PAYMENT_LINKS[metodo]}`;
+    `Como combinamos na ligação, segue o link para pagar sua mensalidade ${how}:\n${PAYMENT_LINKS[metodo]}\n\n` +
+    `Após clicar no link, clique em *Adquirir agora* para abrir a página de pagamento.`;
 
   try {
     const sent = await sendText({
