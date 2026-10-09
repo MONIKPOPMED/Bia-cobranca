@@ -18,6 +18,7 @@
 
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.74.0";
 import { resolveCredentialsForAccount } from "../_shared/elevenlabs/client.ts";
+import { notifyTeam } from "../_shared/team-handoff.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -44,7 +45,7 @@ Deno.serve(async (req) => {
   const { data: call, error } = await admin
     .from("voice_calls")
     .select(
-      "id, account_id, source_id, provider_call_sid, status, recording_storage_path, transcript, transcription_status, metadata, started_at, debt_id",
+      "id, account_id, source_id, provider_call_sid, status, recording_storage_path, transcript, transcription_status, metadata, started_at, debt_id, direction, from_number, to_number",
     )
     .eq("id", body.voice_call_id)
     .maybeSingle();
@@ -203,6 +204,43 @@ Deno.serve(async (req) => {
   if (updErr) {
     console.error("[voice-call-finalize] update voice_calls failed", updErr);
     return j({ error: "db update failed" }, 500);
+  }
+
+  // ── 3b. Safety net for the team handoff ─────────────────────
+  // 09/10 campaign test: the agent said "vou passar seu caso para alguém da
+  // nossa equipe…" but never called passar_para_equipe, so the team was not
+  // told. If the transcript shows the handoff and the tool didn't record one,
+  // notify the team here.
+  if (!(call.metadata as any)?.handoff) {
+    const agentSaid = transcriptArr
+      .filter((t: any) => (t.role ?? t.speaker) === "agent")
+      .map((t: any) => String(t.message ?? t.text ?? ""))
+      .join(" ");
+    if (/passar (o |seu )?(caso|atendimento) para algu[eé]m da (nossa )?equipe/i.test(agentSaid)) {
+      const lastMessages = transcriptArr
+        .filter((t: any) => String(t.message ?? "").trim() && String(t.message).trim() !== "...")
+        .slice(-6)
+        .map((t: any) => `${(t.role ?? t.speaker) === "agent" ? "Bia" : "Cliente"}: ${String(t.message).trim().slice(0, 300)}`);
+      const customerPhone = String(call.direction ?? "").startsWith("outbound") ? call.to_number : call.from_number;
+      let notified = false;
+      try {
+        notified = await notifyTeam(admin, {
+          accountId: call.account_id,
+          origin: "Ligação",
+          customerPhone: customerPhone ?? "",
+          contactId: (call.metadata as any)?.contact_id ?? null,
+          reason: "A Bia passou o caso para a equipe nesta ligação (detectado na transcrição).",
+          lastMessages,
+        });
+      } catch (err) {
+        console.error("[voice-call-finalize] handoff safety net failed", err);
+      }
+      await admin
+        .from("voice_calls")
+        .update({ metadata: { ...updates.metadata, handoff: { via: "transcricao", team_notified: notified, at: new Date().toISOString() } } })
+        .eq("id", call.id);
+      console.log(`[voice-call-finalize] handoff safety net call=${call.id} team_notified=${notified}`);
+    }
   }
 
   // ── 4. Extract arrangement (chama a outra fn) ────────────────
