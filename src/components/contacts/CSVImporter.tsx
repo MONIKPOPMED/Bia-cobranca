@@ -120,7 +120,8 @@ export function CSVImporter({ onComplete }: Props) {
           <li>Telefone BR: aceita (11) 98877-6655, 11988776655, +5511988776655</li>
           <li>Valor: 1.250,50 ou 1250.50 (R$ opcional no prefixo)</li>
           <li>Vencimento: 2026-05-15 ou 15/05/2026</li>
-          <li>Registros em DNC ou telefones duplicados são ignorados automaticamente</li>
+          <li>Uma linha por mensalidade: o mesmo telefone em várias linhas vira um cliente com várias mensalidades</li>
+          <li>Registros em DNC e mensalidades repetidas (mesmo telefone, vencimento e valor) são ignorados automaticamente</li>
         </ul>
       </div>
 

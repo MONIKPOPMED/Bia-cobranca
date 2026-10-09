@@ -228,6 +228,30 @@ Deno.serve(async (req) => {
       if (c.phone_number) existingByPhone.set(c.phone_number, c.id);
     }
 
+    // POPMED: each overdue monthly installment is its own row, so the same
+    // phone appears once per installment and the Bia counts installments
+    // (3+ → 10%). Only an identical installment (phone + due date + amount),
+    // in this file or already in the Carteira, is a duplicate — before, any
+    // repeated phone was dropped, and re-importing duplicated debts.
+    const debtKey = (contactOrPhone: string, venc: string, valor: number) =>
+      `${contactOrPhone}|${venc}|${valor.toFixed(2)}`;
+    const existingDebtKeys = new Set<string>();
+    {
+      const contactIds = [...existingByPhone.values()];
+      for (let k = 0; k < contactIds.length; k += 200) {
+        const { data: debts } = await supabase
+          .from("debts")
+          .select("contact_id, vencimento, valor_original")
+          .eq("account_id", accountId)
+          .in("contact_id", contactIds.slice(k, k + 200));
+        for (const d of debts ?? []) {
+          if (d.vencimento && d.valor_original != null) {
+            existingDebtKeys.add(debtKey(d.contact_id, String(d.vencimento).slice(0, 10), Number(d.valor_original)));
+          }
+        }
+      }
+    }
+
     let imported = 0;
     let skippedDnc = 0;
     let skippedDup = 0;
@@ -267,8 +291,13 @@ Deno.serve(async (req) => {
         }
 
         if (dncSet.has(phone)) { skippedDnc++; continue; }
-        if (seenInBatch.has(phone)) { skippedDup++; continue; }
-        seenInBatch.add(phone);
+        const rowKey = debtKey(phone, vencimento, valor);
+        if (seenInBatch.has(rowKey)) { skippedDup++; continue; }
+        seenInBatch.add(rowKey);
+        const knownContact = existingByPhone.get(phone);
+        if (knownContact && existingDebtKeys.has(debtKey(knownContact, vencimento, valor))) {
+          skippedDup++; continue;
+        }
 
         const email = idx.email >= 0 ? (get(idx.email) || null) : null;
         const docRaw = idx.doc >= 0 ? get(idx.doc) : "";
