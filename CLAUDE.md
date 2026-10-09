@@ -47,8 +47,11 @@ Agente de cobrança por voz e WhatsApp ("Bia") da POPMED. Tudo em português do 
 ## Regras de negócio
 
 - **Guard de discagem** (`_shared/voice/guard.ts`): seg–sex 9h–18h (America/Sao_Paulo), 60 min entre tentativas e 3 por dia **por número de destino** — tentativas bloqueadas também contam.
-- **Números**: `+5548996056774` é o número de saída (Caller ID verificado, `verified_caller_id_only`, persona Bia). `+5548996975445` está **desativado** (não excluir: tem histórico).
-- **Encaminhamento**: a Bia nunca diz "atendente humano"; diz que vai passar para alguém da equipe e informa o horário — seg–sex, exceto feriados, 9h–12h30 e 13h30–17h (`SUPPORT_HOURS_TEXT`).
+- **Números**: `+5548996056774` (6774) é o número da Bia — ligação (Caller ID verificado, `verified_caller_id_only`) e WhatsApp. `+5548996975445` (5445) é o **WhatsApp da equipe** (`company_settings.support_phone`, "WhatsApp da equipe" em Configurações); como número de telefone no app está desativado (não excluir: tem histórico).
+- **Encaminhamento (regra de 07–08/10)**: a Bia tenta resolver; se não conseguir (ou o cliente pedir a equipe — no máximo uma pergunta antes), **a equipe assume pelo WhatsApp 5445**: recebe um resumo (`_shared/team-handoff.ts`: nome completo, WhatsApp do cliente, mensalidades, motivo/últimas falas) e chama o cliente. Nunca transfere ligação, nunca diz "humano". Horário: seg–sex, exceto feriados, 9h–12h30 e 13h30–17h (`SUPPORT_HOURS_TEXT`).
+  - **WhatsApp**: a Bia termina a mensagem com `[[EQUIPE]]`; o `persona-auto-reply` avisa a equipe, diz ao cliente de qual número virá a mensagem e pausa a Bia na conversa (`additional_attributes.ai_paused`; reativar no Chat ao Vivo).
+  - **Ligação**: ferramenta `passar_para_equipe` (função `voice-transfer-tool`, nome antigo mantido por já ter verify_jwt = false); a Bia fala "DDD quarenta e oito, final cinco, quatro, quatro, cinco" (`{{whatsapp_equipe_aviso}}`). Rede de segurança: se o modelo só falar e não chamar a ferramenta, o `voice-call-finalize` detecta na transcrição e avisa a equipe.
+- **Ferramentas da EL** recebem o `conversation_id` como header `{ variable_name }` + campo de corpo com `dynamic_variable` (string `"{{…}}"` em header chegava literal); `findToolCall` ainda tem plano B (única ligação ativa).
 - **Roteiro da Bia** fica no banco (`agent_personas.system_prompt`, persona `9d5fd87e-…`), não no código. Depois de editar, **re-sincronize** (`elevenlabs-agent-sync` / botão Re-sincronizar) para valer na ligação.
 - **Pagamento (regra da POPMED, 30/09)**: só **à vista, PIX ou cartão — não existe parcelamento**. 1 ou 2 mensalidades em atraso: valor cheio e a Bia **não fala de desconto**. 3 ou mais: **10% de desconto** à vista. Na ligação, a regra é calculada em `debtVariables` e o link vai pelo WhatsApp (ferramenta `enviar_link_pagamento` → `voice-send-payment-link`).
 - **Links fixos** (só para UMA mensalidade; `_shared/payment-links.ts` e roteiro): PIX `https://popmed.com.br/produto/popmed-plano-mensal-ia2-pix/`, cartão `https://popmed.com.br/produto/popmed-plano-mensal-ia2-cc/`. Com 2+ mensalidades a equipe manda o link (ainda não existem links para esses casos).
@@ -59,11 +62,18 @@ Agente de cobrança por voz e WhatsApp ("Bia") da POPMED. Tudo em português do 
 - Ligações e campanhas de WhatsApp atingem **pessoas reais** (a Carteira tem devedores reais). Teste só com números combinados.
 - Não commite segredos. O `.env` contém apenas valores públicos (URL e publishable key do Supabase).
 
-## Pendências (30/09/2026)
+## Campanhas
 
-- A Bia já fala nas ligações (teste de 30/09, 3 min). Número de teste combinado: `+5548991667070`.
-- PR #21 (regras da POPMED, link pelo WhatsApp, tom humano, `end_call`): depois do merge, deploy de `twilio-incoming`, `elevenlabs-agent-sync`, `elevenlabs-personalization` e da nova `voice-send-payment-link` (verify_jwt = false); trocar `llm_model` da persona para `gemini-2.5-flash-lite` (o `gemini-2.5-flash` levava 2–5 s por resposta), re-sincronizar e testar de novo.
-- As recusas da operadora em 0–4 s agora ficam em `metadata.twilio_status` — conferir nas próximas ligações.
+- **Ligação**: `voice-campaign-dispatch` roda pelo pg_cron a cada 1 min (migrações 0009/0010, header `x-cron-secret`). Número sem EL (o 6774) liga pela Twilio → `twilio-incoming` → Bia. No fim da ligação o `twilio-status` fecha o contato (`completed`/`failed`) e a campanha (`completed`) quando não sobra ninguém. Use modo **Conversacional**. Testada de ponta a ponta em 09/10.
+- **WhatsApp**: aba WhatsApp de Campanhas; cron a cada 5 min chama `https://bia-cobranca.lovable.app/api/public/whatsapp-campaign-dispatch`.
+- **Carteira**: entra por CSV (`debtors-import-csv`; só `.csv`). Uma linha por mensalidade; mesmo telefone = mesmo cliente; duplicada só se telefone + vencimento + valor iguais (reimportar não duplica). A planilha da POPMED (Excel, vencimentos na coluna OBS "PEN - dd/mm") é convertida fora do app.
+
+## Pendências (09/10/2026)
+
+- Número de teste combinado: `+5548991667070`.
+- Sincronização GitHub → Lovable às vezes trava: antes de pedir deploy, peça ao Lovable para confirmar o commit (ele recusa se não tiver chegado).
+- Modelo `gemini-2.5-flash-lite` às vezes pula ferramentas (por isso a rede de segurança do encaminhamento).
+- As recusas da operadora em 0–4 s ficam em `metadata.twilio_status` — conferir nas próximas ligações.
 - Links de pagamento para 2+ mensalidades (a POPMED precisa criar).
 - Contato/conversa duplicados criados em 24/09 (`ffaf06b6…` / `f13548e4…`) podem ser limpos.
 - 5 ligações antigas presas em `queued` (16–24/09) — só cosmético.
