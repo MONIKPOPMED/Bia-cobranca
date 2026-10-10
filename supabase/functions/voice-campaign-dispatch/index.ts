@@ -54,7 +54,7 @@ Deno.serve(async (req) => {
        contact:contacts(timezone),
        campaign:voice_campaigns(
          id, status, persona_id, voice_id, phone_number_id, script_mode,
-         opening_script, max_call_duration_sec, record_call, max_concurrent,
+         opening_script, max_call_duration_sec, record_call, max_concurrent, voicemail_detection,
          retry_attempts, retry_delay_minutes,
          escalation_rules, account_id,
          allowed_hours_local, max_attempts_per_day, min_minutes_between_attempts,
@@ -451,6 +451,7 @@ async function dispatchViaTwilio(admin: SupabaseClient, row: any, campaign: any,
       phoneNumberId: fromNumberId,
       from: campaign.fromE164,
       to: toNumber,
+      detectVoicemail: campaign.voicemail_detection !== false,
     }));
   } catch (err) {
     await admin

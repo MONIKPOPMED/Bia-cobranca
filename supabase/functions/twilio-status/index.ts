@@ -112,6 +112,11 @@ Deno.serve(async (req) => {
           contactRowId: campaignContactId,
           campaignId: (updated.metadata as any)?.campaign_id,
           answered: mapped === "completed",
+          // Voicemail (answering-machine detection): the Bia left a message —
+          // counted as voicemail, not as a person reached.
+          voicemail: mapped === "completed" &&
+            (/^(machine|fax)/.test(formData.get("AnsweredBy")?.toString() ?? "") ||
+              !!(updated.metadata as any)?.voicemail),
           reason: mapped,
         });
       } catch (err) {
@@ -156,14 +161,14 @@ const IN_FLIGHT = ["queued", "placed", "ringing", "connected", "escalated"];
 async function closeCampaignContact(
   // deno-lint-ignore no-explicit-any
   supabase: any,
-  opts: { contactRowId: number | string; campaignId?: string; answered: boolean; reason: string },
+  opts: { contactRowId: number | string; campaignId?: string; answered: boolean; voicemail?: boolean; reason: string },
 ) {
   const { data: closed } = await supabase
     .from("voice_campaign_contacts")
     .update({
       status: opts.answered ? "completed" : "failed",
       finished_at: new Date().toISOString(),
-      ...(opts.answered ? {} : { last_error: `call ${opts.reason}` }),
+      ...(opts.voicemail ? { last_error: "caixa postal — recado deixado" } : opts.answered ? {} : { last_error: `call ${opts.reason}` }),
     })
     .eq("id", opts.contactRowId)
     .in("status", IN_FLIGHT)
@@ -174,7 +179,7 @@ async function closeCampaignContact(
 
   await supabase.rpc("bump_voice_campaign_totals", {
     p_campaign_id: campaignId,
-    ...(opts.answered ? { p_connected: 1 } : { p_failed: 1 }),
+    ...(opts.voicemail ? { p_voicemail: 1 } : opts.answered ? { p_connected: 1 } : { p_failed: 1 }),
   });
 
   const { count: pending } = await supabase

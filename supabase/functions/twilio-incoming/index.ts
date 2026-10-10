@@ -9,6 +9,7 @@ import {
 import { resolveWebhookAuthTokens } from "../_shared/twilio/config.ts";
 import { resolveCredentialsForAccount } from "../_shared/elevenlabs/client.ts";
 import { buildCallDynamicVariables } from "../_shared/voice/call-variables.ts";
+import { isAnsweringMachine, leaveVoicemail } from "../_shared/voice/voicemail.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -321,6 +322,24 @@ Deno.serve(async (req) => {
     }
 
     const callId = call?.id ?? callSid;
+
+    // Campaign calls ask Twilio for answering-machine detection. On voicemail
+    // the Bia leaves a short message and follows up on WhatsApp instead of
+    // being connected to talk to a recording.
+    const answeredBy = formData.get("AnsweredBy")?.toString() ?? "";
+    if (direction.startsWith("outbound") && isAnsweringMachine(answeredBy)) {
+      const voicemailTwiml = await leaveVoicemail(supabase, {
+        accountId: phoneNumber.account_id,
+        personaId: phoneNumber.pinned_persona_id,
+        customerPhone: to,
+        voiceCallId: call?.id ?? null,
+        answeredBy,
+      });
+      return new Response(voicemailTwiml, {
+        headers: { ...corsHeaders, "Content-Type": "text/xml; charset=utf-8" },
+      });
+    }
+
     const cfg = (phoneNumber.provider_config ?? {}) as Record<string, unknown>;
     const forwardTo = typeof cfg.forward_to === "string" ? cfg.forward_to : "";
 

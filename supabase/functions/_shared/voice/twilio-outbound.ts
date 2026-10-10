@@ -8,7 +8,7 @@ import { loadPhoneNumberCreds, twilioRequest } from "../twilio/index.ts";
 export async function placeTwilioOutboundCall(
   // deno-lint-ignore no-explicit-any
   admin: any,
-  opts: { phoneNumberId: string; from: string; to: string; timeoutSeconds?: number },
+  opts: { phoneNumberId: string; from: string; to: string; timeoutSeconds?: number; detectVoicemail?: boolean },
 ): Promise<{ callSid: string }> {
   const base = Deno.env.get("SUPABASE_URL")!.replace(/\/$/, "");
   const { creds } = await loadPhoneNumberCreds(admin, opts.phoneNumberId);
@@ -31,6 +31,14 @@ export async function placeTwilioOutboundCall(
       RecordingStatusCallback: `${base}/functions/v1/twilio-recording-callback`,
       RecordingStatusCallbackEvent: "completed",
       RecordingChannels: "dual",
+      // Answering-machine detection: Twilio waits for the end of the
+      // voicemail greeting and tells twilio-incoming who answered
+      // (AnsweredBy), so the Bia leaves a short message instead of talking
+      // to the recording (09/10 campaign test). Adds a few seconds of
+      // silence before a human hears the agent.
+      ...(opts.detectVoicemail
+        ? { MachineDetection: "DetectMessageEnd", MachineDetectionTimeout: "30" }
+        : {}),
     },
   });
   if (!data?.sid) throw new Error("Twilio did not return a call SID");
