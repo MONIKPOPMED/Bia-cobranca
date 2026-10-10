@@ -525,7 +525,15 @@ function CreateCampaignDialog({
       ]);
       if (cancelled) return;
       setPersonas(pRes.filter((p) => p.status === "active"));
-      setPhoneNumbers(nRes);
+      // Only numbers that can place calls. A disabled number (e.g. the old
+      // 5445, now the team's WhatsApp) used to be offered and a campaign was
+      // created with it on 09/10.
+      const usable = nRes.filter((p) => p.enabled && p.outbound_enabled);
+      setPhoneNumbers(usable);
+      if (usable.length === 1) {
+        setPhoneNumberId((cur) => cur || usable[0].id);
+        if (usable[0].pinned_persona_id) setPersonaId((cur) => cur || usable[0].pinned_persona_id!);
+      }
       setContacts(((cRes.data as any) ?? []) as typeof contacts);
       const debts = (dRes.data ?? []) as Array<{ valor_atual: number }>;
       setWalletSnapshot({
@@ -889,7 +897,7 @@ function CreateCampaignDialog({
                   <SelectValue placeholder="selecione" />
                 </SelectTrigger>
                 <SelectContent>
-                  {phoneNumbers.filter((p) => p.outbound_enabled).map((p) => (
+                  {phoneNumbers.map((p) => (
                     <SelectItem key={p.id} value={p.id}>
                       {p.friendly_name} · {p.e164}
                     </SelectItem>
@@ -981,10 +989,11 @@ function CreateCampaignDialog({
               <Label className="text-xs">Gravar chamadas</Label>
               <Switch checked={recordCall} onCheckedChange={setRecordCall} />
             </div>
-            <div className="flex items-center justify-between rounded-md border border-amber-500/30 bg-amber-500/[0.04] px-3 py-2">
+            {/* Was amber-200 text on a light dialog — nearly invisible (09/10). */}
+            <div className="flex items-center justify-between rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-2">
               <div>
-                <Label className="text-xs text-amber-200">Modo teste (3 contatos)</Label>
-                <p className="text-[10px] text-amber-200/60">Dispara só pros 3 primeiros — bom pra validar antes de soltar pra base inteira.</p>
+                <Label className="text-xs font-semibold text-foreground">Modo teste (3 contatos)</Label>
+                <p className="text-[11px] text-muted-foreground">Liga só para os 3 primeiros contatos marcados — bom para validar antes de soltar para a base inteira.</p>
               </div>
               <Switch checked={testMode} onCheckedChange={setTestMode} />
             </div>
