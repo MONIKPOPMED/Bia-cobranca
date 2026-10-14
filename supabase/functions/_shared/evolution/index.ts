@@ -186,7 +186,12 @@ export async function createInstance(args: {
       qrcode: res?.qrcode,
     };
   } catch (err) {
-    if (err instanceof EvolutionError && err.status === 409) {
+    // Evolution v2 answers 403 "This name … is already in use" (older builds
+    // used 409) when the instance exists — both mean "reuse it".
+    if (
+      err instanceof EvolutionError &&
+      (err.status === 409 || (err.status === 403 && /already in use/i.test(err.body)))
+    ) {
       // Instance already exists — re-sync the webhook so any secret
       // rotation reaches the live config. Tolerate errors so a broken
       // webhook endpoint doesn't prevent the caller from reusing the
@@ -225,6 +230,30 @@ export async function deleteInstance(args: {
     });
   } catch (err) {
     if (err instanceof EvolutionError && err.status === 404) return;
+    throw err;
+  }
+}
+
+/**
+ * Drops the WhatsApp session of an instance (keeps the instance and its
+ * webhook) so /instance/connect returns a fresh QR code. Used to recover a
+ * "zombie" session: Evolution says "open" but sends fail with
+ * "Connection Closed". Tolerates an instance that is already logged out.
+ */
+export async function logoutInstance(args: {
+  url: string;
+  apiKey: string;
+  instanceName: string;
+}): Promise<void> {
+  try {
+    await evo({
+      url: args.url,
+      apiKey: args.apiKey,
+      method: "DELETE",
+      path: `/instance/logout/${encodeURIComponent(args.instanceName)}`,
+    });
+  } catch (err) {
+    if (err instanceof EvolutionError && (err.status === 404 || err.status === 400)) return;
     throw err;
   }
 }

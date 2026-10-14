@@ -162,7 +162,7 @@ export function EvolutionQuickConnect({ open, onOpenChange, accountId, onConnect
         channelId: channelId ?? undefined,
       });
       if (!prov.ok || !prov.channel_id) {
-        toast.error(prov.error ?? "Falha ao criar instância");
+        toast.error(prov.error ?? "Falha ao criar instância", { description: prov.hint });
         setPhase("form");
         setBusy(false);
         return;
