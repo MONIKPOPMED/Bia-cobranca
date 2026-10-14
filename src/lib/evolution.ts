@@ -5,6 +5,21 @@
  */
 import { supabase } from "@/integrations/supabase/client";
 
+/**
+ * supabase.functions.invoke only says "Edge Function returned a non-2xx
+ * status code"; the function puts the real reason (and a hint) in the body.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function functionErrorBody(error: any): Promise<{ error: string; hint?: string }> {
+  try {
+    const body = await error?.context?.json?.();
+    if (body?.error) return { error: String(body.error), hint: body.hint ?? undefined };
+  } catch {
+    // body not JSON — fall back to the generic message
+  }
+  return { error: error?.message ?? "erro desconhecido" };
+}
+
 export type EvolutionStatus = "disconnected" | "connecting" | "qr_ready" | "connected";
 
 export async function testEvolution(args: {
@@ -20,7 +35,7 @@ export async function testEvolution(args: {
       evolution_api_key: args.evolutionApiKey,
     },
   });
-  if (error) return { ok: false, error: error.message };
+  if (error) return { ok: false, ...(await functionErrorBody(error)) };
   return data as any;
 }
 
@@ -37,6 +52,7 @@ export async function provisionEvolution(args: {
   qrcode_base64?: string | null;
   status?: EvolutionStatus;
   error?: string;
+  hint?: string;
 }> {
   const { data, error } = await supabase.functions.invoke("evolution-provision", {
     body: {
@@ -48,7 +64,7 @@ export async function provisionEvolution(args: {
       channel_name: args.channelName,
     },
   });
-  if (error) return { ok: false, error: error.message };
+  if (error) return { ok: false, ...(await functionErrorBody(error)) };
   return data as any;
 }
 

@@ -17,7 +17,9 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.74.0";
 import {
   EvolutionError,
   createInstance,
+  getQrCode,
   instanceNameFor,
+  logoutInstance,
   ping,
 } from "../_shared/evolution/index.ts";
 
@@ -29,8 +31,8 @@ const corsHeaders = {
 interface Body {
   account_id: string;
   mode?: "test" | "provision";
-  evolution_url: string;
-  evolution_api_key: string;
+  evolution_url?: string;
+  evolution_api_key?: string;
   channel_id?: string; // when updating an existing channel
   channel_name?: string;
 }
@@ -59,9 +61,6 @@ Deno.serve(async (req) => {
   }
 
   if (!body.account_id) return j({ error: "account_id required" }, 400);
-  if (!body.evolution_url || !body.evolution_api_key) {
-    return j({ error: "evolution_url and evolution_api_key required" }, 400);
-  }
 
   const admin = createClient(
     Deno.env.get("SUPABASE_URL")!,
@@ -75,8 +74,28 @@ Deno.serve(async (req) => {
     .maybeSingle();
   if (!role || role.role !== "admin") return j({ error: "admin role required" }, 403);
 
-  const url = body.evolution_url.trim();
-  const apiKey = body.evolution_api_key.trim();
+  // Reconnecting an existing channel: the dialog says "deixe a API key em
+  // branco para manter", so fall back to what is stored on the channel.
+  // deno-lint-ignore no-explicit-any
+  let storedConfig: Record<string, any> | null = null;
+  if (body.channel_id) {
+    const { data: existingChannel } = await admin
+      .from("channels")
+      .select("config")
+      .eq("id", body.channel_id)
+      .eq("account_id", body.account_id)
+      .maybeSingle();
+    if (!existingChannel) {
+      return j({ error: "channel not found or not yours" }, 404);
+    }
+    storedConfig = (existingChannel.config ?? {}) as Record<string, unknown>;
+  }
+
+  const url = (body.evolution_url?.trim() || storedConfig?.evolution_url || "").trim();
+  const apiKey = (body.evolution_api_key?.trim() || storedConfig?.evolution_api_key || "").trim();
+  if (!url || !apiKey) {
+    return j({ error: "evolution_url and evolution_api_key required" }, 400);
+  }
 
   // ─── Test mode: reachability + auth only ─────────────────────────────
   if (body.mode === "test") {
@@ -112,16 +131,7 @@ Deno.serve(async (req) => {
   let existingInstanceName: string | undefined;
 
   if (channelId) {
-    const { data: existingChannel } = await admin
-      .from("channels")
-      .select("config")
-      .eq("id", channelId)
-      .eq("account_id", body.account_id)
-      .maybeSingle();
-    if (!existingChannel) {
-      return j({ error: "channel not found or not yours" }, 404);
-    }
-    existingInstanceName = (existingChannel.config as any)?.evolution_instance_name;
+    existingInstanceName = storedConfig?.evolution_instance_name;
   } else {
     const { data: created, error } = await admin
       .from("channels")
@@ -168,8 +178,24 @@ Deno.serve(async (req) => {
     );
   }
 
+  // Reconnect of an existing instance: /instance/create does not return a
+  // QR code, and a "zombie" session (state "open" but sends fail with
+  // "Connection Closed") never offers one. Drop the session and ask for a
+  // fresh QR so the operator can pair the phone again.
+  if (existingInstanceName && !provisioned.qrcode?.base64) {
+    try {
+      await logoutInstance({ url, apiKey, instanceName: provisioned.instanceName });
+      const qr = await getQrCode({ url, apiKey, instanceName: provisioned.instanceName });
+      if (qr?.base64) provisioned = { ...provisioned, qrcode: { base64: qr.base64 } };
+    } catch (e) {
+      console.warn(`[evolution-provision] reconnect QR failed for ${provisioned.instanceName}:`, e);
+    }
+  }
+
   // Persist the final config now that Evolution confirmed the instance name.
+  // Keeps any other keys already stored on the channel.
   const channelConfig = {
+    ...(storedConfig ?? {}),
     evolution_url: url,
     evolution_api_key: apiKey,
     evolution_instance_name: provisioned.instanceName,
