@@ -108,6 +108,9 @@ export async function controlCampaign(admin: AdminClient, userId: string, campai
 }
 
 export async function dispatchCampaignBatch(admin: AdminClient, lovableApiKey: string) {
+  // Collection messages only go out Mon–Fri 9h–18h (same window as the
+  // calls, _shared/voice/guard.ts); queued customers wait for the next window.
+  if (!isWithinSendingHours()) return { claimed: 0, sent: 0, failed: 0, requeued: 0, outside_hours: true };
   const { data: claimed, error } = await admin.rpc("claim_whatsapp_campaign_recipients", { p_limit: 2 });
   if (error) throw new Error(error.message);
   let sent = 0;
@@ -198,8 +201,8 @@ async function generateMessage(key: string, persona: { name: string; system_prom
       store: false,
       reasoning: { effort: "low", summary: "auto" },
       include: ["reasoning.encrypted_content"],
-      instructions: `${persona.system_prompt ?? "Você é uma assistente de cobrança cordial."}\nCrie uma mensagem inicial em português do Brasil, com no máximo três frases. Identifique-se como ${persona.name}. Não exponha CPF, não ameace e nunca invente valores, datas, links ou condições. Convide o cliente a responder para negociar.`,
-      input: `Escreva apenas a mensagem final para ${String(debt.debtor_name ?? "cliente")}. Empresa: ${settings?.company_name ?? "empresa"}. Valor aberto: ${total}. Vencimento: ${due}. Descrição: ${descriptions}. Desconto máximo: ${settings?.default_discount_pct ?? 0}%. Parcelamento máximo: ${settings?.default_max_installments ?? 1} vezes.`,
+      instructions: `${persona.system_prompt ?? "Você é uma assistente de cobrança cordial."}\nCrie uma mensagem inicial em português do Brasil, com no máximo três frases. Comece com a saudação do horário e o primeiro nome do cliente. Identifique-se como ${persona.name}. Não exponha CPF, não ameace e nunca invente valores, datas, links ou condições. Não mande link nesta primeira mensagem. Convide o cliente a responder para regularizar.`,
+      input: `Escreva apenas a mensagem final para ${String(debt.debtor_name ?? "cliente")}. Empresa: ${settings?.company_name ?? "empresa"}. Agora é ${greeting()}. Vencimento mais antigo: ${due}. Descrição: ${descriptions}. ${paymentRule(Number(debt.debt_count ?? 1), Number(debt.total_open ?? 0))}`,
     }),
   });
   if (!response.ok) throw new AiError(response.status, await safeGatewayError(response));
@@ -241,6 +244,33 @@ async function sendEvolutionText(config: Record<string, unknown>, number: string
   if (!response.ok) throw new ProviderError(response.status, `Evolution ${response.status}: ${raw.slice(0, 240)}`);
   const parsed = raw ? JSON.parse(raw) as { key?: { id?: string }; messageId?: string; id?: string } : {};
   return parsed.key?.id ?? parsed.messageId ?? parsed.id ?? null;
+}
+
+// POPMED rule (30/09) — same as supabase/functions/_shared/payment-links.ts:
+// only à vista (PIX or card), never installments; 1–2 overdue pay full and
+// the Bia does not talk about discount; 3 or more get 10% off.
+function paymentRule(count: number, total: number) {
+  const brl = (v: number) => new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(v);
+  const n = Math.max(1, count);
+  const parcelas = n === 1 ? "1 mensalidade" : `${n} mensalidades`;
+  const pct = n >= 3 ? 10 : 0;
+  if (pct > 0) return `O cliente tem ${parcelas} em atraso, total de ${brl(total)}. Pagando à vista, por PIX ou cartão, tem ${pct}% de desconto: paga ${brl(Math.round(total * (100 - pct)) / 100)}. Não existe parcelamento.`;
+  return `O cliente tem ${parcelas} em atraso, total de ${brl(total)}, à vista por PIX ou cartão. Não existe parcelamento. NÃO existe desconto neste caso: não fale em desconto de forma alguma.`;
+}
+
+function saoPauloNow() {
+  const parts = new Intl.DateTimeFormat("en-US", { timeZone: "America/Sao_Paulo", weekday: "short", hour: "numeric", hourCycle: "h23" }).formatToParts(new Date());
+  return { weekday: parts.find((p) => p.type === "weekday")?.value ?? "", hour: Number(parts.find((p) => p.type === "hour")?.value ?? 0) };
+}
+
+function isWithinSendingHours() {
+  const { weekday, hour } = saoPauloNow();
+  return !["Sat", "Sun"].includes(weekday) && hour >= 9 && hour < 18;
+}
+
+function greeting() {
+  const { hour } = saoPauloNow();
+  return hour < 12 ? "de manhã (bom dia)" : hour < 18 ? "de tarde (boa tarde)" : "de noite (boa noite)";
 }
 
 class AiError extends Error { constructor(public status: number, message: string) { super(message); } }
