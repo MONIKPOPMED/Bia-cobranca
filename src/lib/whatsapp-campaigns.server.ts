@@ -157,7 +157,15 @@ async function dispatchOne(admin: AdminClient, lovableApiKey: string, row: Claim
   await admin.from("contact_inboxes").upsert({ contact_id: row.contact_id, inbox_id: campaign.inbox_id, source_id: `evolution:whatsapp:${row.phone_number}` }, { onConflict: "contact_id,inbox_id", ignoreDuplicates: true });
   const { data: conversationId, error: conversationError } = await admin.rpc("get_or_create_open_conversation", { p_account_id: campaign.account_id, p_contact_id: row.contact_id, p_inbox_id: campaign.inbox_id });
   if (conversationError || !conversationId) throw new Error("Não foi possível abrir a conversa");
-  const providerMessageId = await sendEvolutionText(config, row.phone_number, message);
+  const providerMessageId = await sendEvolutionText(config, row.phone_number, message).catch(async (error) => {
+    // Session down ("Connection Closed"): mark the channel, alert the admins
+    // and pause the campaign; the customer goes back to the queue.
+    if (error instanceof ProviderError && isEvolutionConnectionFailure(error.message)) {
+      await markWhatsAppSendFailure(admin, inbox.channel_id!, campaign.account_id, config, error.message);
+      throw new WhatsAppDownError("WhatsApp desconectado: o servidor Evolution fechou a conexão. Reconecte em Canais e retome a campanha.");
+    }
+    throw error;
+  });
   const now = new Date().toISOString();
   const { data: saved, error: messageError } = await admin.from("messages").insert({
     account_id: campaign.account_id,
@@ -237,8 +245,40 @@ async function sendEvolutionText(config: Record<string, unknown>, number: string
 
 class AiError extends Error { constructor(public status: number, message: string) { super(message); } }
 class ProviderError extends Error { constructor(public status: number, message: string) { super(message); } }
+class WhatsAppDownError extends Error {}
+
+// Same rule as supabase/functions/_shared/evolution/health.ts (edge functions).
+function isEvolutionConnectionFailure(body: string) {
+  return /Connection Closed|Connection Failure|not connected|instance does not exist/i.test(body);
+}
+
+async function markWhatsAppSendFailure(admin: AdminClient, channelId: string, accountId: string, config: Record<string, unknown>, message: string) {
+  try {
+    const previous = asObject(config.evolution_send_error as Json);
+    const lastAlert = typeof previous.alerted_at === "string" ? new Date(previous.alerted_at).getTime() : 0;
+    const now = new Date();
+    const alert = now.getTime() - lastAlert > 6 * 3600 * 1000;
+    const sendError = { at: now.toISOString(), message: message.slice(0, 300), alerted_at: alert ? now.toISOString() : previous.alerted_at ?? null };
+    await admin.from("channels").update({ config: { ...config, evolution_send_error: sendError } as Json }).eq("id", channelId);
+    if (!alert) return;
+    const { data: admins } = await admin.from("user_roles").select("user_id").eq("account_id", accountId).eq("role", "admin");
+    if (!admins?.length) return;
+    await admin.from("notifications").insert(admins.map((a) => ({
+      account_id: accountId,
+      user_id: a.user_id,
+      kind: "whatsapp_send_failed",
+      title: "WhatsApp sem enviar mensagens",
+      body: "O envio pelo WhatsApp da Bia falhou (conexão fechada). Abra Canais e clique em Reconectar.",
+      link_to: "/channels",
+      metadata: { channel_id: channelId, error: message.slice(0, 300) },
+    })));
+  } catch (error) {
+    console.warn("[whatsapp-campaign] could not record send failure", error);
+  }
+}
 function normalizeFailure(error: unknown) {
   const message = error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500);
+  if (error instanceof WhatsAppDownError) return { message, retry: true, pauseCampaign: true };
   if (error instanceof AiError) return { message, retry: error.status === 429 || error.status >= 500, pauseCampaign: [401, 402, 403].includes(error.status) };
   if (error instanceof ProviderError) return { message, retry: error.status === 429 || error.status >= 500, pauseCampaign: error.status === 401 || error.status === 403 };
   const blocked = /bloqueado|não está em execução/i.test(message);

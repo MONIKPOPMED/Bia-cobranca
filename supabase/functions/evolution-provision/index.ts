@@ -17,6 +17,8 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.74.0";
 import {
   EvolutionError,
   createInstance,
+  deleteInstance,
+  getConnectionState,
   getQrCode,
   instanceNameFor,
   logoutInstance,
@@ -183,19 +185,42 @@ Deno.serve(async (req) => {
   // "Connection Closed") never offers one. Drop the session and ask for a
   // fresh QR so the operator can pair the phone again.
   if (existingInstanceName && !provisioned.qrcode?.base64) {
+    const name = provisioned.instanceName;
     try {
-      await logoutInstance({ url, apiKey, instanceName: provisioned.instanceName });
-      const qr = await getQrCode({ url, apiKey, instanceName: provisioned.instanceName });
+      await logoutInstance({ url, apiKey, instanceName: name });
+      const qr = await getQrCode({ url, apiKey, instanceName: name });
       if (qr?.base64) provisioned = { ...provisioned, qrcode: { base64: qr.base64 } };
     } catch (e) {
-      console.warn(`[evolution-provision] reconnect QR failed for ${provisioned.instanceName}:`, e);
+      console.warn(`[evolution-provision] reconnect QR failed for ${name}:`, e);
+    }
+
+    // 14/10: logout and restart were not enough — the server kept saying
+    // "open" with no QR. Last resort: recreate the instance with the same
+    // name (history lives in our DB, not on the Evolution server).
+    if (!provisioned.qrcode?.base64) {
+      try {
+        const state = await getConnectionState({ url, apiKey, instanceName: name }).catch(() => null);
+        console.warn(`[evolution-provision] no QR after logout (state=${state?.instance?.state}); recreating ${name}`);
+        await deleteInstance({ url, apiKey, instanceName: name });
+        const recreated = await createInstance({ url, apiKey, instanceName: name, webhookUrl, webhookSecret });
+        provisioned = { ...recreated, instanceName: name };
+        if (!provisioned.qrcode?.base64) {
+          const qr = await getQrCode({ url, apiKey, instanceName: name });
+          if (qr?.base64) provisioned = { ...provisioned, qrcode: { base64: qr.base64 } };
+        }
+      } catch (e) {
+        console.error(`[evolution-provision] recreate failed for ${name}:`, e);
+        return j({ error: `não foi possível gerar o QR Code: ${errMsg(e)}` }, 502);
+      }
     }
   }
 
   // Persist the final config now that Evolution confirmed the instance name.
   // Keeps any other keys already stored on the channel.
+  // A reconnect also clears the "envio falhou" mark (see _shared/evolution/health.ts).
+  const { evolution_send_error: _cleared, ...keptConfig } = storedConfig ?? {};
   const channelConfig = {
-    ...(storedConfig ?? {}),
+    ...keptConfig,
     evolution_url: url,
     evolution_api_key: apiKey,
     evolution_instance_name: provisioned.instanceName,

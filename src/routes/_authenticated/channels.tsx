@@ -96,6 +96,9 @@ function ChannelsPage() {
   }, [accountId, debtorQuery, recipientMode, selectedDebtor]);
 
   const connected = channel?.config?.evolution_instance_status === "connected";
+  // Set by the send path when Evolution says "open" but sends fail (see
+  // supabase/functions/_shared/evolution/health.ts); cleared by a good send or a reconnect.
+  const sendError = channel?.config?.evolution_send_error as { at?: string } | undefined;
   const recipientPhone = recipientMode === "registered" ? selectedDebtor?.phone_number ?? "" : testPhone;
 
   function changeRecipientMode(mode: RecipientMode) {
@@ -165,6 +168,7 @@ function ChannelsPage() {
           <div className="flex gap-2">{channel && <Button variant="outline" onClick={refreshConnection}>Verificar conexão</Button>}<Button onClick={() => setConnectOpen(true)} disabled={role !== "admin"}><Plug />{channel ? "Reconectar" : "Conectar"}</Button></div>
         </div>
         <div className="mt-4 flex items-center gap-2 border-t border-border pt-4 text-xs text-muted-foreground">{connected ? <CheckCircle2 className="h-4 w-4 text-emerald-500" /> : <ShieldAlert className="h-4 w-4 text-amber-500" />}{connected ? "Conexão confirmada pelo servidor Evolution" : "O envio permanece desativado até a conexão ser confirmada"}</div>
+        {sendError ? <div className="mt-3 flex items-start gap-2 rounded-md border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-600 dark:text-red-400"><ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" /><span><strong>O último envio pelo WhatsApp falhou</strong>{sendError.at ? ` (${new Date(sendError.at).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" })})` : ""}: a conexão com o celular caiu. Clique em <strong>Reconectar</strong> e escaneie o QR Code de novo.</span></div> : null}
       </section>
       <section className="rounded-lg border border-border bg-card p-5">
         <div className="mb-4 flex items-center gap-3"><Bot className="h-5 w-5 text-primary" /><div><h2 className="font-semibold">Agente de mensagens</h2><p className="text-sm text-muted-foreground">Ative uma agente somente depois de conectar o WhatsApp.</p></div></div>

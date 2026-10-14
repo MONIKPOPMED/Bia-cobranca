@@ -5,6 +5,7 @@
 // Evolution's outbound surface is REST (no shared client needed beyond fetch
 // with the right headers); the helpers below normalize the few shapes Nexus
 // cares about so edge functions stay terse.
+import { isConnectionFailure, recordSendResult } from "./health.ts";
 
 export interface EvolutionChannelConfig {
   evolution_url?: string;
@@ -21,6 +22,7 @@ export type EvolutionConnectionState =
   | "qrReadSuccess"
   | "qr"
   | "loggedOut";
+
 
 const DEFAULT_TIMEOUT_MS = 20_000;
 
@@ -319,6 +321,24 @@ function toEvolutionNumber(input: string): string {
 }
 
 /**
+ * Runs a send and records whether the session really works (see health.ts):
+ * "Connection Closed" marks the channel and alerts the admins; a success
+ * clears an earlier mark.
+ */
+async function trackedSend<T>(instanceName: string, send: () => Promise<T>): Promise<T> {
+  try {
+    const res = await send();
+    await recordSendResult(instanceName, { ok: true });
+    return res;
+  } catch (err) {
+    if (err instanceof EvolutionError && isConnectionFailure(err.body || err.message)) {
+      await recordSendResult(instanceName, { ok: false, message: err.body || err.message });
+    }
+    throw err;
+  }
+}
+
+/**
  * Send text. Accepts a phone-like string OR a full Baileys JID.
  */
 export async function sendText(args: {
@@ -328,7 +348,7 @@ export async function sendText(args: {
   number: string;
   text: string;
 }): Promise<{ messageId?: string }> {
-  const res = await evo<any>({
+  const res = await trackedSend(args.instanceName, () => evo<any>({
     url: args.url,
     apiKey: args.apiKey,
     method: "POST",
@@ -337,7 +357,7 @@ export async function sendText(args: {
       number: toEvolutionNumber(args.number),
       text: args.text,
     },
-  });
+  }));
   return { messageId: res?.key?.id ?? res?.messageId ?? res?.id };
 }
 
@@ -351,7 +371,7 @@ export async function sendMedia(args: {
   caption?: string;
   fileName?: string;
 }): Promise<{ messageId?: string }> {
-  const res = await evo<any>({
+  const res = await trackedSend(args.instanceName, () => evo<any>({
     url: args.url,
     apiKey: args.apiKey,
     method: "POST",
@@ -363,7 +383,7 @@ export async function sendMedia(args: {
       caption: args.caption,
       fileName: args.fileName,
     },
-  });
+  }));
   return { messageId: res?.key?.id ?? res?.messageId ?? res?.id };
 }
 
@@ -380,7 +400,7 @@ export async function sendVoiceNote(args: {
   number: string;
   audioUrl: string;
 }): Promise<{ messageId?: string }> {
-  const res = await evo<any>({
+  const res = await trackedSend(args.instanceName, () => evo<any>({
     url: args.url,
     apiKey: args.apiKey,
     method: "POST",
@@ -390,7 +410,7 @@ export async function sendVoiceNote(args: {
       audio: args.audioUrl,
       encoding: true,
     },
-  });
+  }));
   return { messageId: res?.key?.id ?? res?.messageId ?? res?.id };
 }
 
