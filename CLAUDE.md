@@ -64,7 +64,7 @@ Agente de cobrança por voz e WhatsApp ("Bia") da POPMED. Tudo em português do 
 
 ## Campanhas
 
-- **Ligação**: `voice-campaign-dispatch` roda pelo pg_cron a cada 1 min (migrações 0009/0010, header `x-cron-secret`). Número sem EL (o 6774) liga pela Twilio → `twilio-incoming` → Bia. No fim da ligação o `twilio-status` fecha o contato (`completed`/`failed`) e a campanha (`completed`) quando não sobra ninguém. Use modo **Conversacional**. Testada de ponta a ponta em 09/10.
+- **Ligação**: `voice-campaign-dispatch` roda pelo pg_cron a cada 1 min (migrações 0009/0010, header `x-cron-secret`). Número sem EL (o 6774) liga pela Twilio → `twilio-incoming` → Bia. No fim da ligação o `twilio-status` fecha o contato (`completed`/`failed`) e a campanha (`completed`) quando não sobra ninguém. Use modo **Conversacional**. Testada de ponta a ponta em 09/10. **Caixa postal** ("Detectar secretária eletrônica"): detecção **assíncrona** da Twilio (`AsyncAmd`, callback `twilio-status?amd=1`): a Bia entra na hora; se for máquina, a ligação é trocada pelo recado + WhatsApp (`leaveVoicemail`). O modo síncrono (10–15/10) deixava 5–10 s de linha muda e o cliente desligava.
 - **WhatsApp**: aba WhatsApp de Campanhas; cron a cada 5 min chama `https://bia-cobranca.lovable.app/api/public/whatsapp-campaign-dispatch`.
 - **Carteira**: entra por CSV (`debtors-import-csv`; só `.csv`). Uma linha por mensalidade; mesmo telefone = mesmo cliente; duplicada só se telefone + vencimento + valor iguais (reimportar não duplica). A planilha da POPMED (Excel, vencimentos na coluna OBS "PEN - dd/mm") é convertida fora do app.
 

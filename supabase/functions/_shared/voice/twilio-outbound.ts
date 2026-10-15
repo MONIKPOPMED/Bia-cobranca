@@ -31,13 +31,20 @@ export async function placeTwilioOutboundCall(
       RecordingStatusCallback: `${base}/functions/v1/twilio-recording-callback`,
       RecordingStatusCallbackEvent: "completed",
       RecordingChannels: "dual",
-      // Answering-machine detection: Twilio waits for the end of the
-      // voicemail greeting and tells twilio-incoming who answered
-      // (AnsweredBy), so the Bia leaves a short message instead of talking
-      // to the recording (09/10 campaign test). Adds a few seconds of
-      // silence before a human hears the agent.
+      // Answering-machine detection, ASYNCHRONOUS: the Bia is connected as
+      // soon as the call is answered and Twilio reports who answered later,
+      // to twilio-status?amd=1. On voicemail twilio-status redirects the
+      // live call to the short message + WhatsApp follow-up.
+      // The synchronous mode (10/10) held the line silent for 5–10 s until
+      // the person stopped talking — customers hung up (15/10 test).
       ...(opts.detectVoicemail
-        ? { MachineDetection: "DetectMessageEnd", MachineDetectionTimeout: "30" }
+        ? {
+          MachineDetection: "DetectMessageEnd",
+          MachineDetectionTimeout: "30",
+          AsyncAmd: "true",
+          AsyncAmdStatusCallback: `${base}/functions/v1/twilio-status?amd=1`,
+          AsyncAmdStatusCallbackMethod: "POST",
+        }
         : {}),
     },
   });
