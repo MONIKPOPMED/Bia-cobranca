@@ -5,6 +5,11 @@
 //
 // The spoken message uses Twilio's own TTS — the ElevenLabs agent is not
 // connected on these calls.
+//
+// sendCallFollowUp is also used when a campaign call doesn't work out
+// (POPMED, 15/10): nobody answered, or the call was answered but dropped /
+// stayed silent / broke up before the Bia finished. The customer then gets a
+// WhatsApp message and the Bia continues there.
 import { sendText } from "../evolution/index.ts";
 import { phoneVariants } from "../phone.ts";
 import { loadWhatsAppSender } from "../team-handoff.ts";
@@ -21,20 +26,27 @@ function escapeXml(s: string): string {
 
 const WHATSAPP_COOLDOWN_HOURS = 24;
 
+export type FollowUpKind = "voicemail" | "no_answer" | "bad_call";
+
+const FOLLOW_UP_TEXT: Record<FollowUpKind, string> = {
+  voicemail: "Tentei falar com você por telefone agora há pouco e não consegui. Posso continuar por aqui?",
+  no_answer: "Tentei falar com você por telefone agora há pouco e não consegui. Posso continuar por aqui?",
+  bad_call: "Acabei de te ligar, mas a ligação não ficou boa. Posso continuar por aqui?",
+};
+
 /**
- * Returns the TwiML that leaves the message and, at most once per customer
- * every 24h, sends the WhatsApp follow-up. Never throws: the call must get
- * valid TwiML even if the WhatsApp part fails.
+ * Sends the "tentei falar com você" WhatsApp message, at most once per
+ * customer every 24h (voicemail or any other follow-up). Never throws.
  */
-export async function leaveVoicemail(
+export async function sendCallFollowUp(
   // deno-lint-ignore no-explicit-any
   supabase: any,
-  opts: { accountId: string; personaId: string | null; customerPhone: string; voiceCallId: string | null; answeredBy: string },
-): Promise<string> {
+  opts: { accountId: string; personaId: string | null; customerPhone: string; kind: FollowUpKind },
+): Promise<{ sent: boolean; skipped: string | null; company: string; agent: string }> {
   let company = "nossa empresa";
   let agent = "Bia";
-  let whatsappSent = false;
-  let whatsappSkipped: string | null = null;
+  let sent = false;
+  let skipped: string | null = null;
 
   try {
     const [{ data: settings }, { data: account }, { data: persona }, { data: contacts }] = await Promise.all([
@@ -61,25 +73,44 @@ export async function leaveVoicemail(
       .eq("account_id", opts.accountId)
       .eq("to_number", opts.customerPhone)
       .gte("started_at", since)
-      .eq("metadata->voicemail->>whatsapp_sent", "true");
+      .or("metadata->voicemail->>whatsapp_sent.eq.true,metadata->followup->>whatsapp_sent.eq.true");
 
     const sender = await loadWhatsAppSender(supabase, opts.accountId);
-    if ((recent ?? 0) > 0) whatsappSkipped = "ja_enviado_24h";
-    else if (!sender) whatsappSkipped = "whatsapp_desconectado";
+    if ((recent ?? 0) > 0) skipped = "ja_enviado_24h";
+    else if (!sender) skipped = "whatsapp_desconectado";
     else {
       const first = (contacts?.[0]?.name as string | undefined)?.trim().split(/\s+/)[0];
       const hello = first ? `Oi, ${first.charAt(0).toUpperCase()}${first.slice(1).toLowerCase()}!` : "Oi!";
       await sendText({
         ...sender,
         number: contacts?.[0]?.phone_number ?? opts.customerPhone,
-        text: `${hello} Aqui é a ${agent}, da ${company}. Tentei falar com você por telefone agora há pouco e não consegui. Posso continuar por aqui?`,
+        text: `${hello} Aqui é a ${agent}, da ${company}. ${FOLLOW_UP_TEXT[opts.kind]}`,
       });
-      whatsappSent = true;
+      sent = true;
     }
   } catch (err) {
-    console.error("[voicemail] follow-up failed", err);
-    whatsappSkipped = whatsappSkipped ?? "erro";
+    console.error(`[follow-up] ${opts.kind} WhatsApp failed`, err);
+    skipped = skipped ?? "erro";
   }
+  return { sent, skipped, company, agent };
+}
+
+/**
+ * Returns the TwiML that leaves the message and, at most once per customer
+ * every 24h, sends the WhatsApp follow-up. Never throws: the call must get
+ * valid TwiML even if the WhatsApp part fails.
+ */
+export async function leaveVoicemail(
+  // deno-lint-ignore no-explicit-any
+  supabase: any,
+  opts: { accountId: string; personaId: string | null; customerPhone: string; voiceCallId: string | null; answeredBy: string },
+): Promise<string> {
+  const { sent: whatsappSent, skipped: whatsappSkipped, company, agent } = await sendCallFollowUp(supabase, {
+    accountId: opts.accountId,
+    personaId: opts.personaId,
+    customerPhone: opts.customerPhone,
+    kind: "voicemail",
+  });
 
   if (opts.voiceCallId) {
     try {
@@ -108,4 +139,51 @@ export async function leaveVoicemail(
   const spoken = `Olá! Aqui é a ${agent}, da ${company}. Vamos te enviar uma mensagem pelo WhatsApp. Até logo!`;
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response><Say language="pt-BR" voice="Polly.Camila">${escapeXml(spoken)}</Say><Hangup/></Response>`;
+}
+
+/**
+ * Follow-up for a campaign call that didn't work out (no answer, or answered
+ * but ended without a result). Records the outcome on
+ * voice_calls.metadata.followup. Never throws.
+ */
+export async function followUpFailedCall(
+  // deno-lint-ignore no-explicit-any
+  supabase: any,
+  opts: { voiceCallId: string; kind: Exclude<FollowUpKind, "voicemail">; reason: string },
+): Promise<void> {
+  try {
+    const { data: call } = await supabase
+      .from("voice_calls")
+      .select("id, account_id, persona_id, to_number, direction, metadata")
+      .eq("id", opts.voiceCallId)
+      .maybeSingle();
+    const meta = (call?.metadata ?? {}) as Record<string, unknown>;
+    if (!call || !meta.campaign_id || !String(call.direction ?? "").startsWith("outbound")) return;
+    if (meta.followup || meta.voicemail) return; // already handled
+    const result = await sendCallFollowUp(supabase, {
+      accountId: call.account_id,
+      personaId: call.persona_id,
+      customerPhone: call.to_number,
+      kind: opts.kind,
+    });
+    const { data: fresh } = await supabase.from("voice_calls").select("metadata").eq("id", call.id).maybeSingle();
+    await supabase
+      .from("voice_calls")
+      .update({
+        metadata: {
+          ...(fresh?.metadata ?? meta),
+          followup: {
+            kind: opts.kind,
+            reason: opts.reason,
+            whatsapp_sent: result.sent,
+            whatsapp_skipped: result.skipped,
+            at: new Date().toISOString(),
+          },
+        },
+      })
+      .eq("id", call.id);
+    console.log(`[follow-up] call=${call.id} kind=${opts.kind} reason=${opts.reason} sent=${result.sent} skipped=${result.skipped}`);
+  } catch (err) {
+    console.error("[follow-up] failed", err);
+  }
 }

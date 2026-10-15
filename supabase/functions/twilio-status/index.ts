@@ -7,7 +7,7 @@ import {
 } from "../_shared/webhook-security.ts";
 import { loadPhoneNumberCreds, resolveWebhookAuthTokens } from "../_shared/twilio/config.ts";
 import { twilioRequest } from "../_shared/twilio/index.ts";
-import { isAnsweringMachine, leaveVoicemail } from "../_shared/voice/voicemail.ts";
+import { followUpFailedCall, isAnsweringMachine, leaveVoicemail } from "../_shared/voice/voicemail.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -132,6 +132,13 @@ Deno.serve(async (req) => {
         });
       } catch (err) {
         console.error("[twilio-status] campaign contact update failed", err);
+      }
+
+      // Nobody picked up (no answer, busy, carrier failure): the Bia follows
+      // up on WhatsApp (POPMED, 15/10). Answered calls are judged by
+      // voice-call-finalize once the conversation is in.
+      if (mapped === "no_answer" || mapped === "busy" || mapped === "failed") {
+        await followUpFailedCall(supabase, { voiceCallId: updated.id, kind: "no_answer", reason: mapped });
       }
     }
 

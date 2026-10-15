@@ -19,6 +19,7 @@
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.74.0";
 import { resolveCredentialsForAccount } from "../_shared/elevenlabs/client.ts";
 import { notifyTeam } from "../_shared/team-handoff.ts";
+import { followUpFailedCall } from "../_shared/voice/voicemail.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -272,6 +273,30 @@ Deno.serve(async (req) => {
     extractResult = await r.json().catch(() => ({}));
   } catch (err) {
     console.warn("[voice-call-finalize] extract failed", err);
+  }
+
+  // ── 5. WhatsApp follow-up when the call didn't work out ─────
+  // POPMED, 15/10: the call was answered but dropped, stayed silent or broke
+  // up before anything was settled → the Bia writes on WhatsApp. "Settled"
+  // = the team took over, a payment link went out, an arrangement was
+  // extracted, or the Bia closed the call herself (end_call).
+  const { data: latest } = await admin.from("voice_calls").select("metadata").eq("id", call.id).maybeSingle();
+  const latestMeta = (latest?.metadata ?? {}) as Record<string, any>;
+  const agentEndedCall = transcriptArr.some((t: any) =>
+    (t.tool_calls ?? []).some((tc: any) => tc?.tool_name === "end_call")
+  );
+  if (
+    latestMeta.campaign_id &&
+    !latestMeta.handoff &&
+    !latestMeta.payment_link &&
+    !extractResult?.arrangement_id &&
+    !agentEndedCall
+  ) {
+    await followUpFailedCall(admin, {
+      voiceCallId: call.id,
+      kind: "bad_call",
+      reason: String(convData.metadata?.termination_reason ?? "sem desfecho"),
+    });
   }
 
   console.log(
