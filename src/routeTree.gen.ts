@@ -29,6 +29,7 @@ import { Route as AuthenticatedRecuperacaoRouteImport } from './routes/_authenti
 import { Route as AuthenticatedSettingsRouteImport } from './routes/_authenticated/settings'
 import { Route as AuthenticatedVoiceCampaignsRouteImport } from './routes/_authenticated/voice-campaigns'
 import { Route as ApiPublicWhatsappCampaignDispatchRouteImport } from './routes/api/public/whatsapp-campaign-dispatch'
+import { Route as ApiPublicWhatsappHealthCheckRouteImport } from './routes/api/public/whatsapp-health-check'
 import { Route as ApiPublicHooksDebtorsAutoSyncRouteImport } from './routes/api/public/hooks/debtors-auto-sync'
 import { Route as ApiPublicHooksVoiceCallsFinalizePendingRouteImport } from './routes/api/public/hooks/voice-calls-finalize-pending'
 
@@ -135,6 +136,12 @@ const ApiPublicWhatsappCampaignDispatchRoute =
     path: '/api/public/whatsapp-campaign-dispatch',
     getParentRoute: () => rootRouteImport,
   } as any)
+const ApiPublicWhatsappHealthCheckRoute =
+  ApiPublicWhatsappHealthCheckRouteImport.update({
+    id: '/api/public/whatsapp-health-check',
+    path: '/api/public/whatsapp-health-check',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const ApiPublicHooksDebtorsAutoSyncRoute =
   ApiPublicHooksDebtorsAutoSyncRouteImport.update({
     id: '/api/public/hooks/debtors-auto-sync',
@@ -168,6 +175,7 @@ export interface FileRoutesByFullPath {
   '/settings': typeof AuthenticatedSettingsRoute
   '/voice-campaigns': typeof AuthenticatedVoiceCampaignsRoute
   '/api/public/whatsapp-campaign-dispatch': typeof ApiPublicWhatsappCampaignDispatchRoute
+  '/api/public/whatsapp-health-check': typeof ApiPublicWhatsappHealthCheckRoute
   '/api/public/hooks/debtors-auto-sync': typeof ApiPublicHooksDebtorsAutoSyncRoute
   '/api/public/hooks/voice-calls-finalize-pending': typeof ApiPublicHooksVoiceCallsFinalizePendingRoute
 }
@@ -191,6 +199,7 @@ export interface FileRoutesByTo {
   '/voice-campaigns': typeof AuthenticatedVoiceCampaignsRoute
   '/': typeof AuthenticatedIndexRoute
   '/api/public/whatsapp-campaign-dispatch': typeof ApiPublicWhatsappCampaignDispatchRoute
+  '/api/public/whatsapp-health-check': typeof ApiPublicWhatsappHealthCheckRoute
   '/api/public/hooks/debtors-auto-sync': typeof ApiPublicHooksDebtorsAutoSyncRoute
   '/api/public/hooks/voice-calls-finalize-pending': typeof ApiPublicHooksVoiceCallsFinalizePendingRoute
 }
@@ -216,6 +225,7 @@ export interface FileRoutesById {
   '/_authenticated/voice-campaigns': typeof AuthenticatedVoiceCampaignsRoute
   '/_authenticated/': typeof AuthenticatedIndexRoute
   '/api/public/whatsapp-campaign-dispatch': typeof ApiPublicWhatsappCampaignDispatchRoute
+  '/api/public/whatsapp-health-check': typeof ApiPublicWhatsappHealthCheckRoute
   '/api/public/hooks/debtors-auto-sync': typeof ApiPublicHooksDebtorsAutoSyncRoute
   '/api/public/hooks/voice-calls-finalize-pending': typeof ApiPublicHooksVoiceCallsFinalizePendingRoute
 }
@@ -241,6 +251,7 @@ export interface FileRouteTypes {
     | '/settings'
     | '/voice-campaigns'
     | '/api/public/whatsapp-campaign-dispatch'
+    | '/api/public/whatsapp-health-check'
     | '/api/public/hooks/debtors-auto-sync'
     | '/api/public/hooks/voice-calls-finalize-pending'
   fileRoutesByTo: FileRoutesByTo
@@ -264,6 +275,7 @@ export interface FileRouteTypes {
     | '/voice-campaigns'
     | '/'
     | '/api/public/whatsapp-campaign-dispatch'
+    | '/api/public/whatsapp-health-check'
     | '/api/public/hooks/debtors-auto-sync'
     | '/api/public/hooks/voice-calls-finalize-pending'
   id:
@@ -288,6 +300,7 @@ export interface FileRouteTypes {
     | '/_authenticated/voice-campaigns'
     | '/_authenticated/'
     | '/api/public/whatsapp-campaign-dispatch'
+    | '/api/public/whatsapp-health-check'
     | '/api/public/hooks/debtors-auto-sync'
     | '/api/public/hooks/voice-calls-finalize-pending'
   fileRoutesById: FileRoutesById
@@ -300,6 +313,7 @@ export interface RootRouteChildren {
   ResetPasswordRoute: typeof ResetPasswordRoute
   TermsRoute: typeof TermsRoute
   ApiPublicWhatsappCampaignDispatchRoute: typeof ApiPublicWhatsappCampaignDispatchRoute
+  ApiPublicWhatsappHealthCheckRoute: typeof ApiPublicWhatsappHealthCheckRoute
   ApiPublicHooksDebtorsAutoSyncRoute: typeof ApiPublicHooksDebtorsAutoSyncRoute
   ApiPublicHooksVoiceCallsFinalizePendingRoute: typeof ApiPublicHooksVoiceCallsFinalizePendingRoute
 }
@@ -446,6 +460,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiPublicWhatsappCampaignDispatchRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/public/whatsapp-health-check': {
+      id: '/api/public/whatsapp-health-check'
+      path: '/api/public/whatsapp-health-check'
+      fullPath: '/api/public/whatsapp-health-check'
+      preLoaderRoute: typeof ApiPublicWhatsappHealthCheckRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/public/hooks/debtors-auto-sync': {
       id: '/api/public/hooks/debtors-auto-sync'
       path: '/api/public/hooks/debtors-auto-sync'
@@ -508,6 +529,7 @@ const rootRouteChildren: RootRouteChildren = {
   TermsRoute: TermsRoute,
   ApiPublicWhatsappCampaignDispatchRoute:
     ApiPublicWhatsappCampaignDispatchRoute,
+  ApiPublicWhatsappHealthCheckRoute: ApiPublicWhatsappHealthCheckRoute,
   ApiPublicHooksDebtorsAutoSyncRoute: ApiPublicHooksDebtorsAutoSyncRoute,
   ApiPublicHooksVoiceCallsFinalizePendingRoute:
     ApiPublicHooksVoiceCallsFinalizePendingRoute,
