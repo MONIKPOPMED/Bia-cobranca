@@ -307,6 +307,27 @@ export function normalizeStatus(
 }
 
 /**
+ * Asks WhatsApp whether numbers exist — sends nothing to anyone. It needs a
+ * live session, so it fails ("Connection Closed") when the session is a
+ * zombie that connectionState still reports as "open" (14/10). Used by
+ * whatsapp-health-check as a probe.
+ */
+export async function checkWhatsAppNumbers(args: {
+  url: string;
+  apiKey: string;
+  instanceName: string;
+  numbers: string[];
+}): Promise<unknown> {
+  return await evo({
+    url: args.url,
+    apiKey: args.apiKey,
+    method: "POST",
+    path: `/chat/whatsappNumbers/${encodeURIComponent(args.instanceName)}`,
+    body: { numbers: args.numbers.map(toEvolutionNumber) },
+  });
+}
+
+/**
  * Normalize a destination for Evolution's `number` field.
  * - Bare JID (`...@s.whatsapp.net` / `...@lid`) passes through untouched —
  *   Baileys routes directly by JID and skips the whatsappNumbers check,
