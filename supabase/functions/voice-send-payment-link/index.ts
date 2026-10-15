@@ -12,6 +12,7 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.74.0";
 import { sendText } from "../_shared/evolution/index.ts";
+import { recordOutgoingWhatsApp } from "../_shared/whatsapp-history.ts";
 import { phoneVariants } from "../_shared/phone.ts";
 import { PAYMENT_LINKS, type PaymentMethod } from "../_shared/payment-links.ts";
 import { notifyTeam } from "../_shared/team-handoff.ts";
@@ -133,6 +134,15 @@ Deno.serve(async (req) => {
       text,
     });
     await recordOutcome({ sent: true, message_id: sent.messageId ?? null });
+    await recordOutgoingWhatsApp(admin, {
+      accountId: call.account_id,
+      contactId: contact!.id,
+      phone: contact!.phone_number ?? customerPhone ?? "",
+      text,
+      personaId: call.persona_id ?? null,
+      messageId: sent.messageId ?? null,
+      kind: "payment_link",
+    });
     return j({ ok: true, message: "Link enviado pelo WhatsApp. Diga ao cliente que o link já chegou no WhatsApp dele." });
   } catch (err) {
     console.error("[voice-send-payment-link] Evolution send failed", err);

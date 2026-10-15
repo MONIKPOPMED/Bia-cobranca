@@ -17,6 +17,7 @@ export type ToolCallRow = {
   id: string;
   account_id: string;
   direction: string;
+  persona_id: string | null;
   from_number: string | null;
   to_number: string | null;
   // deno-lint-ignore no-explicit-any
@@ -33,7 +34,7 @@ export async function findToolCall(
   const fromBody = cleanId(body?.conversation_id);
   const fromHeader = cleanId(req.headers.get("x-conversation-id"));
   const conversationId = fromBody ?? fromHeader;
-  const cols = "id, account_id, direction, from_number, to_number, metadata";
+  const cols = "id, account_id, persona_id, direction, from_number, to_number, metadata";
   console.log(
     `[${tag}] conversation id body=${fromBody ?? "-"} header=${fromHeader ?? `raw:${(req.headers.get("x-conversation-id") ?? "").slice(0, 40)}`}`,
   );

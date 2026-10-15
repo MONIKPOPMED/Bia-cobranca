@@ -58,7 +58,7 @@ Deno.serve(async (req) => {
   // 1) Load the triggering message; bail if it isn't a real Contact message.
   const { data: trigger } = await admin
     .from("messages")
-    .select("id, sender_type, content, conversation_id, account_id")
+    .select("id, sender_type, content, conversation_id, account_id, created_at")
     .eq("id", triggeringMessageId)
     .maybeSingle();
   if (!trigger) return j({ skipped: "trigger_not_found" });
@@ -211,6 +211,19 @@ Deno.serve(async (req) => {
     console.error("[persona-auto-reply] llm error", err);
     return j({ error: "llm_exception" }, 502);
   }
+
+  // Customers often send two quick messages ("Oi" / "Sim"): each one fires
+  // this function and both got an answer (15/10). If a newer customer message
+  // arrived while we were generating, its own run answers with the full
+  // context; if another reply already went out, don't send a second one.
+  const [{ count: newerFromContact }, { count: botSinceTrigger }] = await Promise.all([
+    admin.from("messages").select("id", { count: "exact", head: true })
+      .eq("conversation_id", conversationId).eq("sender_type", "Contact").gt("created_at", trigger.created_at),
+    admin.from("messages").select("id", { count: "exact", head: true })
+      .eq("conversation_id", conversationId).eq("sender_type", "AgentBot").gt("created_at", trigger.created_at),
+  ]);
+  if ((newerFromContact ?? 0) > 0) return j({ skipped: "superseded_by_newer_message" });
+  if ((botSinceTrigger ?? 0) > 0) return j({ skipped: "already_answered" });
 
   // Strip residual placeholders just in case.
   reply = reply.replace(/\[(?:Nome do Cliente|Seu Nome|Nome da Empresa|valor|data|valor da dívida|data do vencimento|Valor do Débito)\]/gi, "").trim();
