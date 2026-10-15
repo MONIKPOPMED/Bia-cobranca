@@ -78,7 +78,10 @@ Deno.serve(async (req) => {
     return j({ skipped: "ai_paused_by_operator" });
   }
 
-  // 2) Rate-limit: most recent AgentBot reply within MIN_REPLY_GAP_SECONDS.
+  // 2) Spacing: a customer who answered within MIN_REPLY_GAP_SECONDS of the
+  // Bia's last message used to be ignored for good (15/10 campaign: "No pix",
+  // "Acabei de pagar" never got an answer). Wait out the gap instead; the
+  // newer-message check before sending avoids double answers.
   const sinceGap = new Date(Date.now() - MIN_REPLY_GAP_SECONDS * 1000).toISOString();
   const { count: recentBotCount } = await admin
     .from("messages")
@@ -87,7 +90,20 @@ Deno.serve(async (req) => {
     .eq("sender_type", "AgentBot")
     .gte("created_at", sinceGap);
   if ((recentBotCount ?? 0) > 0) {
-    return j({ skipped: "rate_limited" });
+    await new Promise((resolve) => setTimeout(resolve, MIN_REPLY_GAP_SECONDS * 1000));
+  }
+
+  // 2b) Loop guard (what the gap used to protect against): an auto-responder
+  // ("Fulano agradece seu contato…") sending the same text again and again.
+  const { data: lastFromContact } = await admin
+    .from("messages")
+    .select("content")
+    .eq("conversation_id", conversationId)
+    .eq("sender_type", "Contact")
+    .order("created_at", { ascending: false })
+    .limit(3);
+  if ((lastFromContact ?? []).length === 3 && lastFromContact!.every((m: any) => (m.content ?? "").trim() === txt)) {
+    return j({ skipped: "auto_responder_loop" });
   }
 
   // 3) Hourly circuit breaker.
