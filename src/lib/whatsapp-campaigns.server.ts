@@ -4,8 +4,6 @@ import type { Database, Json } from "@/integrations/supabase/types";
 type AdminClient = SupabaseClient<Database>;
 type ClaimedRecipient = Database["public"]["Tables"]["whatsapp_campaign_recipients"]["Row"];
 
-const AI_MODEL = "openai/gpt-6-astra";
-const AI_GATEWAY = "https://ai.gateway.lovable.dev/v1/responses";
 
 export async function createCampaign(admin: AdminClient, userId: string, input: {
   accountId: string;
@@ -155,7 +153,7 @@ async function dispatchOne(admin: AdminClient, lovableApiKey: string, row: Claim
   if (!channel?.enabled || config.evolution_instance_status !== "connected") throw new Error("WhatsApp desconectado");
 
   const debt = asObject(row.debt_data);
-  const message = await generateMessage(lovableApiKey, persona, settings, debt);
+  const message = firstMessage(settings?.company_name ?? null, debt);
   await admin.from("whatsapp_campaign_recipients").update({ status: "sending", generated_message: message }).eq("id", row.id);
   await admin.from("contact_inboxes").upsert({ contact_id: row.contact_id, inbox_id: campaign.inbox_id, source_id: `evolution:whatsapp:${row.phone_number}` }, { onConflict: "contact_id,inbox_id", ignoreDuplicates: true });
   const { data: conversationId, error: conversationError } = await admin.rpc("get_or_create_open_conversation", { p_account_id: campaign.account_id, p_contact_id: row.contact_id, p_inbox_id: campaign.inbox_id });
@@ -188,46 +186,29 @@ async function dispatchOne(admin: AdminClient, lovableApiKey: string, row: Claim
   await admin.from("whatsapp_campaign_recipients").update({ status: "sent", conversation_id: conversationId, message_id: saved.id, provider_message_id: providerMessageId, sent_at: now }).eq("id", row.id);
 }
 
-async function generateMessage(key: string, persona: { name: string; system_prompt: string | null }, settings: { company_name: string | null; default_discount_pct: number | null; default_max_installments: number | null } | null, debt: Record<string, unknown>) {
-  const total = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(Number(debt.total_open ?? 0));
-  const due = typeof debt.nearest_due_date === "string" ? new Date(`${debt.nearest_due_date}T12:00:00Z`).toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" }) : "não informado";
-  const descriptions = Array.isArray(debt.descriptions) ? debt.descriptions.join(", ") : "não informada";
-  const response = await fetch(AI_GATEWAY, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "Lovable-API-Key": key, "X-Lovable-AIG-SDK": "fetch" },
-    body: JSON.stringify({
-      model: AI_MODEL,
-      stream: true,
-      store: false,
-      reasoning: { effort: "low", summary: "auto" },
-      include: ["reasoning.encrypted_content"],
-      instructions: `${persona.system_prompt ?? "Você é uma assistente de cobrança cordial."}\nCrie uma mensagem inicial em português do Brasil, com no máximo três frases. Comece com a saudação do horário e o primeiro nome do cliente. Identifique-se como ${persona.name}. Não exponha CPF, não ameace e nunca invente valores, datas, links ou condições. Não mande link nesta primeira mensagem. Convide o cliente a responder para regularizar.`,
-      input: `Escreva apenas a mensagem final para ${String(debt.debtor_name ?? "cliente")}. Empresa: ${settings?.company_name ?? "empresa"}. Agora é ${greeting()}. Vencimento mais antigo: ${due}. Descrição: ${descriptions}. ${paymentRule(Number(debt.debt_count ?? 1), Number(debt.total_open ?? 0))}`,
-    }),
-  });
-  if (!response.ok) throw new AiError(response.status, await safeGatewayError(response));
-  if (!response.body) throw new AiError(500, "A IA não retornou conteúdo");
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let text = "";
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() ?? "";
-    for (const line of lines) {
-      if (!line.startsWith("data: ") || line === "data: [DONE]") continue;
-      try {
-        const event = JSON.parse(line.slice(6)) as { type?: string; delta?: string };
-        if (event.type === "response.output_text.delta" && event.delta) text += event.delta;
-      } catch { /* ignored event */ }
-    }
-  }
-  const cleaned = text.trim().replace(/^["']|["']$/g, "");
-  if (!cleaned) throw new AiError(500, "A IA não gerou a mensagem");
-  return cleaned.slice(0, 1500);
+/**
+ * First campaign message — fixed text written by POPMED (15/10); the AI
+ * version asked for the customer's full name and didn't say the amount.
+ * Same payment rule as the calls (supabase/functions/_shared/payment-links.ts):
+ * à vista by PIX or card, no installments; 3 or more overdue get 10% off.
+ */
+function firstMessage(companyName: string | null, debt: Record<string, unknown>) {
+  const brl = (v: number) => new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(v);
+  const first = String(debt.debtor_name ?? "").trim().split(/\s+/)[0] ?? "";
+  const name = first ? `, ${first.charAt(0).toUpperCase()}${first.slice(1).toLowerCase()}` : "";
+  const company = companyName || "POPMED";
+  const n = Math.max(1, Number(debt.debt_count ?? 1));
+  const total = Number(debt.total_open ?? 0);
+  const pct = n >= 3 ? 10 : 0;
+  const owed = n === 1
+    ? `Sua mensalidade está em atraso, consta valor em aberto de ${brl(total)}.`
+    : `Você tem ${n} mensalidades em atraso, consta valor em aberto de ${brl(total)}.`;
+  const discount = pct > 0
+    ? ` Pagando à vista, você tem ${pct}% de desconto e fica ${brl(Math.round(total * (100 - pct)) / 100)}.`
+    : "";
+  return `${greeting()}${name}. Sou a Bia, da ${company}, tudo bem? ` +
+    "Vim te lembrar que você conta com Clínico Geral 24 horas, todos os dias, com consultas ilimitadas e atendimento sem sair de casa. " +
+    `${owed}${discount} Você prefere pagar com cartão de crédito ou PIX?`;
 }
 
 async function sendEvolutionText(config: Record<string, unknown>, number: string, text: string) {
@@ -246,18 +227,6 @@ async function sendEvolutionText(config: Record<string, unknown>, number: string
   return parsed.key?.id ?? parsed.messageId ?? parsed.id ?? null;
 }
 
-// POPMED rule (30/09) — same as supabase/functions/_shared/payment-links.ts:
-// only à vista (PIX or card), never installments; 1–2 overdue pay full and
-// the Bia does not talk about discount; 3 or more get 10% off.
-function paymentRule(count: number, total: number) {
-  const brl = (v: number) => new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(v);
-  const n = Math.max(1, count);
-  const parcelas = n === 1 ? "1 mensalidade" : `${n} mensalidades`;
-  const pct = n >= 3 ? 10 : 0;
-  if (pct > 0) return `O cliente tem ${parcelas} em atraso, total de ${brl(total)}. Pagando à vista, por PIX ou cartão, tem ${pct}% de desconto: paga ${brl(Math.round(total * (100 - pct)) / 100)}. Não existe parcelamento.`;
-  return `O cliente tem ${parcelas} em atraso, total de ${brl(total)}, à vista por PIX ou cartão. Não existe parcelamento. NÃO existe desconto neste caso: não fale em desconto de forma alguma.`;
-}
-
 function saoPauloNow() {
   const parts = new Intl.DateTimeFormat("en-US", { timeZone: "America/Sao_Paulo", weekday: "short", hour: "numeric", hourCycle: "h23" }).formatToParts(new Date());
   return { weekday: parts.find((p) => p.type === "weekday")?.value ?? "", hour: Number(parts.find((p) => p.type === "hour")?.value ?? 0) };
@@ -270,10 +239,9 @@ function isWithinSendingHours() {
 
 function greeting() {
   const { hour } = saoPauloNow();
-  return hour < 12 ? "de manhã (bom dia)" : hour < 18 ? "de tarde (boa tarde)" : "de noite (boa noite)";
+  return hour < 12 ? "Bom dia" : hour < 18 ? "Boa tarde" : "Boa noite";
 }
 
-class AiError extends Error { constructor(public status: number, message: string) { super(message); } }
 class ProviderError extends Error { constructor(public status: number, message: string) { super(message); } }
 class WhatsAppDownError extends Error {}
 
@@ -309,18 +277,10 @@ async function markWhatsAppSendFailure(admin: AdminClient, channelId: string, ac
 function normalizeFailure(error: unknown) {
   const message = error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500);
   if (error instanceof WhatsAppDownError) return { message, retry: true, pauseCampaign: true };
-  if (error instanceof AiError) return { message, retry: error.status === 429 || error.status >= 500, pauseCampaign: [401, 402, 403].includes(error.status) };
   if (error instanceof ProviderError) return { message, retry: error.status === 429 || error.status >= 500, pauseCampaign: error.status === 401 || error.status === 403 };
   const blocked = /bloqueado|não está em execução/i.test(message);
   const disconnected = /desconectado|Credenciais|Canal de WhatsApp inválido/i.test(message);
   return { message, retry: !blocked && !disconnected, pauseCampaign: disconnected };
-}
-async function safeGatewayError(response: Response) {
-  const raw = await response.text();
-  try {
-    const parsed = JSON.parse(raw) as { message?: string; error?: { message?: string } };
-    return String(parsed.message ?? parsed.error?.message ?? `Falha da IA (${response.status})`).slice(0, 500);
-  } catch { return `Falha da IA (${response.status})`; }
 }
 function normalizePhone(value: string | null) { return (value ?? "").replace(/\D/g, ""); }
 function asObject(value: Json | null | undefined): Record<string, any> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, any> : {}; }
