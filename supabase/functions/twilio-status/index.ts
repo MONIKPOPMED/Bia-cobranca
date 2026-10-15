@@ -5,7 +5,9 @@ import {
   isWebhookVerificationDisabled,
   validateTwilioSignatureAny,
 } from "../_shared/webhook-security.ts";
-import { resolveWebhookAuthTokens } from "../_shared/twilio/config.ts";
+import { loadPhoneNumberCreds, resolveWebhookAuthTokens } from "../_shared/twilio/config.ts";
+import { twilioRequest } from "../_shared/twilio/index.ts";
+import { isAnsweringMachine, leaveVoicemail } from "../_shared/voice/voicemail.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -36,7 +38,8 @@ Deno.serve(async (req) => {
 
     if (!isWebhookVerificationDisabled()) {
       const ok = await validateTwilioSignatureAny({
-        urls: [getPublicUrl(req), `${supabaseUrl.replace(/\/$/, "")}/functions/v1/twilio-status`],
+        // The async AMD callback comes to ?amd=1 — Twilio signs the query too.
+        urls: [getPublicUrl(req), `${supabaseUrl.replace(/\/$/, "")}/functions/v1/twilio-status${new URL(req.url).search}`],
         authTokens: await resolveWebhookAuthTokens(supabase, formData),
         form: formData,
         signature: req.headers.get("x-twilio-signature"),
@@ -53,6 +56,14 @@ Deno.serve(async (req) => {
 
     if (!callSid) {
       return new Response("missing CallSid", { status: 400, headers: corsHeaders });
+    }
+
+    // Async answering-machine detection result (placeTwilioOutboundCall with
+    // AsyncAmd): the Bia is already talking. On voicemail, swap the live
+    // call to the short message + WhatsApp follow-up.
+    if (new URL(req.url).searchParams.get("amd") === "1") {
+      await handleAsyncAmd(supabase, callSid, formData.get("AnsweredBy")?.toString() ?? "");
+      return new Response("ok", { headers: corsHeaders });
     }
 
     const mapped = STATUS_MAP[callStatus] ?? "in_progress";
@@ -150,6 +161,51 @@ Deno.serve(async (req) => {
     return new Response("error", { status: 500, headers: corsHeaders });
   }
 });
+
+/**
+ * Records who answered and, when it is a machine, redirects the live call to
+ * the voicemail TwiML (leaveVoicemail also sends the WhatsApp follow-up).
+ * Never throws: Twilio only needs a 200.
+ */
+async function handleAsyncAmd(
+  // deno-lint-ignore no-explicit-any
+  supabase: any,
+  callSid: string,
+  answeredBy: string,
+) {
+  try {
+    const { data: call } = await supabase
+      .from("voice_calls")
+      .select("id, account_id, persona_id, phone_number_id, to_number, metadata")
+      .eq("provider_call_sid", callSid)
+      .maybeSingle();
+    if (!call) return;
+    const metadata = (call.metadata as Record<string, unknown> | null) ?? {};
+    await supabase
+      .from("voice_calls")
+      .update({ metadata: { ...metadata, amd: { answered_by: answeredBy, at: new Date().toISOString() } } })
+      .eq("id", call.id);
+    console.log(`[twilio-status] async AMD call=${call.id} answered_by=${answeredBy}`);
+    if (!isAnsweringMachine(answeredBy) || !call.phone_number_id) return;
+
+    const twiml = await leaveVoicemail(supabase, {
+      accountId: call.account_id,
+      personaId: call.persona_id,
+      customerPhone: call.to_number,
+      voiceCallId: call.id,
+      answeredBy,
+    });
+    const { creds } = await loadPhoneNumberCreds(supabase, call.phone_number_id);
+    await twilioRequest({
+      method: "POST",
+      path: `/2010-04-01/Accounts/${creds.accountSid}/Calls/${callSid}.json`,
+      credentials: creds,
+      form: { Twiml: twiml },
+    });
+  } catch (err) {
+    console.error("[twilio-status] async AMD handling failed", err);
+  }
+}
 
 const IN_FLIGHT = ["queued", "placed", "ringing", "connected", "escalated"];
 
