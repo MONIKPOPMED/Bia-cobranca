@@ -13,6 +13,7 @@
 import { sendText } from "../evolution/index.ts";
 import { phoneVariants } from "../phone.ts";
 import { loadWhatsAppSender } from "../team-handoff.ts";
+import { recordOutgoingWhatsApp } from "../whatsapp-history.ts";
 import { spokenAgentName } from "./call-variables.ts";
 
 /** Twilio AnsweredBy values that mean "not a person". */
@@ -57,7 +58,7 @@ export async function sendCallFollowUp(
         : Promise.resolve({ data: null }),
       supabase
         .from("contacts")
-        .select("name, phone_number")
+        .select("id, name, phone_number")
         .eq("account_id", opts.accountId)
         .in("phone_number", phoneVariants(opts.customerPhone))
         .limit(1),
@@ -81,12 +82,21 @@ export async function sendCallFollowUp(
     else {
       const first = (contacts?.[0]?.name as string | undefined)?.trim().split(/\s+/)[0];
       const hello = first ? `Oi, ${first.charAt(0).toUpperCase()}${first.slice(1).toLowerCase()}!` : "Oi!";
-      await sendText({
-        ...sender,
-        number: contacts?.[0]?.phone_number ?? opts.customerPhone,
-        text: `${hello} Aqui é a ${agent}, da ${company}. ${FOLLOW_UP_TEXT[opts.kind]}`,
-      });
+      const text = `${hello} Aqui é a ${agent}, da ${company}. ${FOLLOW_UP_TEXT[opts.kind]}`;
+      const number = contacts?.[0]?.phone_number ?? opts.customerPhone;
+      const res = await sendText({ ...sender, number, text });
       sent = true;
+      if (contacts?.[0]?.id) {
+        await recordOutgoingWhatsApp(supabase, {
+          accountId: opts.accountId,
+          contactId: contacts[0].id,
+          phone: number,
+          text,
+          personaId: opts.personaId,
+          messageId: res.messageId ?? null,
+          kind: `call_followup_${opts.kind}`,
+        });
+      }
     }
   } catch (err) {
     console.error(`[follow-up] ${opts.kind} WhatsApp failed`, err);
