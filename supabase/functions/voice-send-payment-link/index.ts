@@ -123,7 +123,10 @@ Deno.serve(async (req) => {
   const text =
     `${hello} Aqui é a Bia, da ${settings?.company_name ?? "POPMED"}. ` +
     `Como combinamos na ligação, segue o link para pagar sua mensalidade ${how}:\n${PAYMENT_LINKS[metodo]}\n\n` +
-    `Após clicar no link, clique em *Adquirir agora* para abrir a página de pagamento.`;
+    `Após clicar no link, clique em *Adquirir agora* para abrir a página de pagamento.
+
+` +
+    `Depois de pagar, me envie o comprovante por aqui, por favor.`;
 
   try {
     const sent = await sendText({

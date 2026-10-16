@@ -387,10 +387,12 @@ export async function sendMedia(args: {
   apiKey: string;
   instanceName: string;
   number: string;
+  /** Public URL or raw base64 (Evolution accepts both). */
   mediaUrl: string;
   mediaType: "image" | "video" | "document" | "audio";
   caption?: string;
   fileName?: string;
+  mimetype?: string;
 }): Promise<{ messageId?: string }> {
   const res = await trackedSend(args.instanceName, () => evo<any>({
     url: args.url,
@@ -403,9 +405,51 @@ export async function sendMedia(args: {
       media: args.mediaUrl,
       caption: args.caption,
       fileName: args.fileName,
+      mimetype: args.mimetype,
     },
   }));
   return { messageId: res?.key?.id ?? res?.messageId ?? res?.id };
+}
+
+/**
+ * Downloads (and decrypts) the media of a received message, by its id.
+ * Returns base64 without the data: prefix.
+ */
+export async function getMediaBase64(args: {
+  url: string;
+  apiKey: string;
+  instanceName: string;
+  messageId: string;
+}): Promise<{ base64: string; mimetype?: string; fileName?: string }> {
+  const res = await evo<any>({
+    url: args.url,
+    apiKey: args.apiKey,
+    method: "POST",
+    path: `/chat/getBase64FromMediaMessage/${encodeURIComponent(args.instanceName)}`,
+    body: { message: { key: { id: args.messageId } }, convertToMp4: false },
+    timeoutMs: 30_000,
+  });
+  const base64 = String(res?.base64 ?? "").replace(/^data:[^,]+,/, "");
+  if (!base64) throw new EvolutionError("Evolution não devolveu a mídia", 502, JSON.stringify(res ?? {}).slice(0, 200));
+  return { base64, mimetype: res?.mimetype, fileName: res?.fileName };
+}
+
+/** Id of the group the Bia is in, by its name (case-insensitive). */
+export async function findGroupIdByName(args: {
+  url: string;
+  apiKey: string;
+  instanceName: string;
+  name: string;
+}): Promise<string | null> {
+  const groups = await evo<any[]>({
+    url: args.url,
+    apiKey: args.apiKey,
+    method: "GET",
+    path: `/group/fetchAllGroups/${encodeURIComponent(args.instanceName)}?getParticipants=false`,
+  });
+  const want = args.name.trim().toLowerCase();
+  const g = (Array.isArray(groups) ? groups : []).find((x) => String(x?.subject ?? "").trim().toLowerCase() === want);
+  return g?.id ? String(g.id) : null;
 }
 
 /**

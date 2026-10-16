@@ -55,6 +55,7 @@ const ACCEPTED_MESSAGE_TYPES = new Set<string>([
   "audioMessage",
   "videoMessage",
   "documentMessage",
+  "documentWithCaptionMessage", // PDF sent with a caption (e.g. a receipt)
   "stickerMessage",
 ]);
 
@@ -113,12 +114,24 @@ Deno.serve(async (req) => {
     (msg.documentMessage && typeof msg.documentMessage.caption === "string"
       ? msg.documentMessage.caption
       : "") ||
+    (typeof msg.documentWithCaptionMessage?.message?.documentMessage?.caption === "string"
+      ? msg.documentWithCaptionMessage.message.documentMessage.caption
+      : "") ||
     "";
 
   const hasMedia = !!(
     msg.imageMessage || msg.audioMessage || msg.videoMessage ||
-    msg.documentMessage || msg.stickerMessage
+    msg.documentMessage || msg.documentWithCaptionMessage || msg.stickerMessage
   );
+  // Photo or file (PDF…) = possible payment receipt (forwarded to the
+  // finance group, _shared/finance-receipt.ts). Documents sometimes arrive
+  // wrapped in documentWithCaptionMessage.
+  const doc = msg.documentMessage ?? msg.documentWithCaptionMessage?.message?.documentMessage;
+  const receipt: ReceiptMedia | null = msg.imageMessage
+    ? { mediaType: "image", mimetype: msg.imageMessage.mimetype }
+    : doc
+    ? { mediaType: "document", mimetype: doc.mimetype, fileName: doc.fileName }
+    : null;
 
   // 5) If there is no real text and no media, it's a stub/protocol message —
   // drop it. NEVER persist a literal "[mensagem]" placeholder.
@@ -156,6 +169,8 @@ Deno.serve(async (req) => {
       text: text.trim() || (hasMedia ? "[mídia]" : ""),
       hasMedia,
       pushName: data?.pushName ?? null,
+      receipt,
+      caption: text.trim(),
     });
   } catch (err) {
     console.error("[evolution-incoming] handle failed", err);
@@ -173,6 +188,8 @@ async function handleMessage(
     text: string;
     hasMedia: boolean;
     pushName: string | null;
+    receipt: ReceiptMedia | null;
+    caption: string;
   },
 ) {
   const { instanceName, remoteJid, messageId, text, hasMedia, pushName } = args;
@@ -333,6 +350,33 @@ async function handleMessage(
     .update({ last_activity_at: new Date().toISOString() })
     .eq("id", conversation.id);
 
+  // Photo/PDF from the customer: payment receipt → finance group (POPMED,
+  // 16/10). The confirmation to the customer replaces the AI reply, so the
+  // Bia doesn't answer twice; when the team took over (ai_paused) it is
+  // forwarded but nobody answers automatically.
+  if (args.receipt) {
+    const { data: flags } = await admin.from("conversations").select("additional_attributes").eq("id", conversation.id).maybeSingle();
+    const paused = (flags?.additional_attributes as any)?.ai_paused === true;
+    const result = await forwardReceiptToFinance(admin, {
+      accountId,
+      conversationId: conversation.id,
+      inboxId: inbox.id,
+      contactId: contact.id,
+      customerNumber: remoteJid.replace(/:d+@/, "@"),
+      messageId,
+      mediaType: args.receipt.mediaType,
+      caption: args.caption,
+      fileName: args.receipt.fileName,
+      mimetype: args.receipt.mimetype,
+      replyToCustomer: !paused,
+    });
+    await admin
+      .from("messages")
+      .update({ content_attributes: { kind: "media", receipt: { forwarded: result.forwarded, error: result.error ?? null, at: new Date().toISOString() } } })
+      .eq("id", inserted.id);
+    if (result.forwarded) return;
+  }
+
   // Only explicitly enabled automatic deployments may answer this inbox.
   const { data: deployment } = await admin
     .from("agent_persona_deployments")
@@ -359,4 +403,7 @@ async function handleMessage(
 }
 
 import { phoneVariants } from "../_shared/phone.ts";
+import { forwardReceiptToFinance } from "../_shared/finance-receipt.ts";
 export { phoneVariants };
+
+type ReceiptMedia = { mediaType: "image" | "document"; mimetype?: string; fileName?: string };
