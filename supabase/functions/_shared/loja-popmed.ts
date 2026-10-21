@@ -25,6 +25,15 @@ export const FORMAS = {
 } as const;
 export type Forma = keyof typeof FORMAS;
 
+/** Billing address used when the customer's is unknown (any address works — Leonardo, 21/10). */
+const ENDERECO_PADRAO = {
+  address_1: "Não informado, s/n",
+  address_2: "",
+  city: "Florianópolis",
+  state: "SC",
+  postcode: "88010-000",
+};
+
 export const VALOR_MINIMO_CENTAVOS = 2990; // R$ 29,90
 export const VALOR_MAXIMO_CENTAVOS = 99900; // R$ 999,00
 
@@ -176,7 +185,10 @@ export class LojaPopmed {
             state: /^[A-Z]{2}$/.test(uf) ? uf : "",
             postcode: `${cep.slice(0, 5)}-${cep.slice(5)}`,
           }
-          : {}),
+          // Without a billing address the store finds no region and shows no
+          // payment method (test order 3045, 21/10). Leonardo: "pode ser
+          // qualquer um" — the customer fills the real one on the payment page.
+          : ENDERECO_PADRAO),
         country: "BR",
       },
       line_items: [{ product_id: f.produto, quantity: 1, subtotal: reais(valorCentavos), total: reais(valorCentavos) }],
