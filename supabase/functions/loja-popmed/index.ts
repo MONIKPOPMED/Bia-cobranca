@@ -45,6 +45,23 @@ Deno.serve(async (req) => {
   const acao = String(body.acao ?? "");
 
   try {
+    // Guide 4.2 (21/10): a 401 with the "right" key means the secret is not the
+    // server's. Compare fingerprints without ever showing the key.
+    if (acao === "diagnostico_chave") {
+      const bruta = Deno.env.get("POPMED_CONSULTA_CHAVE") ?? "";
+      const limpa = bruta.trim().replace(/^["']|["']$/g, "").replace(/^Bearer\s+/i, "").trim();
+      const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(limpa))))
+        .map((b) => b.toString(16).padStart(2, "0")).join("");
+      return j({
+        existe: bruta.length > 0,
+        tamanho: limpa.length,
+        formato_64_hex: /^[0-9a-fA-F]{64}$/.test(limpa),
+        parece_chave_da_loja: /^(ck|cs)_/.test(limpa),
+        tinha_espacos_aspas_ou_bearer: bruta !== limpa,
+        sha256: hash,
+      });
+    }
+
     if (acao === "consultar") {
       const c = await consultarCliente(String(body.cpf ?? ""));
       return j({
