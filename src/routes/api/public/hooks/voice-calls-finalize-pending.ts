@@ -12,6 +12,7 @@
 
 import { createFileRoute } from "@tanstack/react-router";
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
+import { authenticateCronRequest } from "@/integrations/supabase/cron-auth";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -56,6 +57,10 @@ export const Route = createFileRoute("/api/public/hooks/voice-calls-finalize-pen
         new Response(null, { status: 204, headers: corsHeaders }),
 
       POST: async ({ request }) => {
+        // Only the scheduler (Bearer LOVABLE_CRON_SECRET, like the other
+        // crons) may trigger it — it used to be open to anyone (21/10).
+        const authError = await authenticateCronRequest(request);
+        if (authError) return authError;
         const startedAt = Date.now();
         const url = new URL(request.url);
         const { mode, minIso, maxIso, limit } = resolveWindow(url);
