@@ -66,7 +66,8 @@ export type Consulta = {
 
 /** Asks POPMED's system about a CPF. Without a 200 the Bia must not charge (guide 4.2). */
 export async function consultarCliente(cpfBruto: string): Promise<Consulta> {
-  const chave = Deno.env.get("POPMED_CONSULTA_CHAVE") ?? "";
+  // Tolerate how the key may have been pasted: spaces/newlines, quotes, "Bearer ".
+  const chave = (Deno.env.get("POPMED_CONSULTA_CHAVE") ?? "").trim().replace(/^["']|["']$/g, "").replace(/^Bearer\s+/i, "").trim();
   if (!chave) throw new Error("Chave da consulta não configurada (POPMED_CONSULTA_CHAVE)");
   const cpf = soDigitos(cpfBruto);
   if (!cpfValido(cpf)) throw invalido("CPF inválido");
@@ -74,7 +75,7 @@ export async function consultarCliente(cpfBruto: string): Promise<Consulta> {
   try {
     resp = await fetch(CONSULTA, {
       method: "POST",
-      headers: { Authorization: `Bearer ${chave.replace(/^Bearer\s+/i, "")}`, "Content-Type": "application/json", Accept: "application/json" },
+      headers: { Authorization: `Bearer ${chave}`, "Content-Type": "application/json", Accept: "application/json" },
       body: JSON.stringify({ cpf }), // the CPF never goes in the URL
       signal: AbortSignal.timeout(20_000),
     });
@@ -161,7 +162,9 @@ export class LojaPopmed {
       billing: {
         first_name: nome.slice(0, espaco),
         last_name: nome.slice(espaco + 1),
-        email, // the customer's, or empty: never invent one
+        // Only when the customer has one (never invent it): the store rejects an
+        // empty string as an invalid billing param (400 rest_invalid_param, 21/10).
+        ...(email ? { email } : {}),
         phone: telefone,
         cpf,
         persontype: "F",
@@ -259,7 +262,9 @@ export class LojaPopmed {
     let msg = "";
     try {
       const j = JSON.parse(texto);
-      msg = [j?.code, j?.message].filter(Boolean).join(": ");
+      // rest_invalid_param says which field is wrong in data.params/details.
+      const detalhe = j?.data?.details ?? j?.data?.params;
+      msg = [j?.code, j?.message, detalhe ? JSON.stringify(detalhe).slice(0, 300) : null].filter(Boolean).join(": ");
     } catch {
       msg = texto.trim().slice(0, 300); // server or Wordfence error page
     }
