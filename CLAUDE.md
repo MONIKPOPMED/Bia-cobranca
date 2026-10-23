@@ -57,6 +57,13 @@ Agente de cobrança por voz e WhatsApp ("Bia") da POPMED. Tudo em português do 
 - **Links fixos** (só para UMA mensalidade; `_shared/payment-links.ts` e roteiro): PIX `https://popmed.com.br/produto/popmed-plano-mensal-ia2-pix/`, cartão `https://popmed.com.br/produto/popmed-plano-mensal-ia2-cc/`. Com 2+ mensalidades a equipe manda o link (ainda não existem links para esses casos).
 - **Tom**: o roteiro tem a seção "TOM DE ATENDIMENTO" (saudação do horário, primeiro nome, "Posso te ajudar em mais alguma coisa?", emoji ≤1 só no WhatsApp). Nunca pedir CPF ou documento.
 
+## Loja POPMED e consulta pelo CPF (guia do Leonardo, 15–21/10)
+
+- Guia: `WOOCOMMERCE_PEDIDOS_PARA_LOVABLE.md` (versão de 21/10). Código: `_shared/loja-popmed.ts` (Deno) e `src/lib/popmed-consulta.server.ts` (campanha de WhatsApp, servidor do app). Console de teste só admin: função `loja-popmed` (`consultar`, `produto`, `teste_criar` só com o CPF de teste 012.345.678-90, `situacao`, `cancelar`, `diagnostico_chave`). Pedido de teste: **cancelar em menos de 10 min**.
+- Secrets: `WOO_CONSUMER_KEY`/`WOO_CONSUMER_SECRET` (loja) e `POPMED_CONSULTA_CHAVE` (64 hex — só o que vem depois do `=`).
+- **Interruptor `LOJA_POPMED_ATIVA`** (secret, `sim` para ligar). Desligado = Bia como antes (links fixos, valores da Carteira). Ligado: consulta pelo CPF antes de cada mensagem da campanha e em cada resposta/ligação; link = pedido na loja (cartão 3038 ou Pix Automático 3042) via marcação `[[LINK_CARTAO]]`/`[[LINK_PIX]]`; um link por conversa (`conversations.additional_attributes.loja_pedido`, sem a URL); pedidos não pagos são cancelados após 7 dias (no ciclo do `whatsapp-health-check`). **Só ligar depois do pagamento real de teste com o Leonardo.**
+- Cartão na página "pagar pedido" depende do snippet do Leonardo (guia 9.4.1, instalado em 22/10). Sem endereço a loja não mostra forma de pagamento: vai um endereço padrão (o cliente preenche o dele na página).
+
 ## Cuidado
 
 - Ligações e campanhas de WhatsApp atingem **pessoas reais** (a Carteira tem devedores reais). Teste só com números combinados.

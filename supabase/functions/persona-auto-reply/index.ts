@@ -8,6 +8,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.74.0";
 import { sendText } from "../_shared/evolution/index.ts";
 import { formatBrPhone, HANDOFF_MARKER, HANDOFF_RULE_WHATSAPP } from "../_shared/handoff.ts";
+import { consultarCliente, contextoDaConsulta, cpfDoContato, type Forma, linkDeCobranca, lojaAtiva } from "../_shared/loja-popmed.ts";
 import { type EvolutionSender, loadTeamWhatsApp, notifyTeam } from "../_shared/team-handoff.ts";
 
 const corsHeaders = {
@@ -148,7 +149,12 @@ Deno.serve(async (req) => {
   systemPrompt = `${systemPrompt}\n\n${SYSTEM_PROMPT_GUARDRAILS}\n\n${HANDOFF_RULE_WHATSAPP}`;
   // Without this the agent had no access to the debt and answered
   // "não tenho acesso ao valor em aberto" even for imported debtors.
-  const debtContext = await loadDebtContext(admin, accountId, conversationId);
+  // With the store integration on (LOJA_POPMED_ATIVA), the CPF lookup is the
+  // source of truth (guide 4.2, 21/10: the imported Carteira gets stale the
+  // same day); otherwise the Carteira, as before.
+  const debtContext = lojaAtiva()
+    ? await loadConsultaContext(admin, conversationId)
+    : await loadDebtContext(admin, accountId, conversationId);
   if (debtContext) systemPrompt = `${systemPrompt}\n\n${debtContext}`;
 
   // 5) Load short history (oldest → newest).
@@ -245,8 +251,13 @@ Deno.serve(async (req) => {
   reply = reply.replace(/\[(?:Nome do Cliente|Seu Nome|Nome da Empresa|valor|data|valor da dívida|data do vencimento|Valor do Débito)\]/gi, "").trim();
   // The agent marks a handoff to the team (HANDOFF_RULE_WHATSAPP); the marker
   // never reaches the customer.
-  const handoff = reply.includes(HANDOFF_MARKER);
+  let handoff = reply.includes(HANDOFF_MARKER);
   reply = reply.split(HANDOFF_MARKER).join("").trim();
+  if (lojaAtiva()) {
+    const r = await applyPaymentLink(admin, conversationId, reply);
+    reply = r.reply;
+    handoff = handoff || r.handoff;
+  }
   if (!reply) return j({ skipped: "empty_reply" });
   if (handoff) {
     // Tell the customer which number the team will write from.
@@ -399,6 +410,71 @@ export async function loadDebtContext(
     );
   }
   return lines.join("\n");
+}
+
+// ── Store order links (LOJA_POPMED_ATIVA) ────────────────────────────────
+
+const LINK_MARKERS: Array<{ re: RegExp; forma: Forma }> = [
+  { re: /\[\[LINK_CARTAO\]\]/g, forma: "cartao" },
+  { re: /\[\[LINK_PIX\]\]/g, forma: "pix_automatico" },
+  // Safety net: the old fixed product links in the script must not go out anymore.
+  { re: /https?:\/\/(?:www\.)?popmed\.com\.br\/produto\/popmed-plano-mensal-ia2-cc\/?/g, forma: "cartao" },
+  { re: /https?:\/\/(?:www\.)?popmed\.com\.br\/produto\/popmed-plano-mensal-ia2-pix\/?/g, forma: "pix_automatico" },
+];
+
+const PIX_NOTE =
+  "No Pix Automático, o mesmo Pix paga esta cobrança e autoriza as próximas mensalidades (R$ 49,90) no seu banco. Se o banco perguntar um valor máximo, não coloque menos de R$ 49,90.";
+
+/**
+ * Replaces the link marker with this customer's store order link. When no
+ * link can be made, the reply becomes an explanation and, when the team must
+ * act, a handoff.
+ */
+async function applyPaymentLink(
+  // deno-lint-ignore no-explicit-any
+  admin: any,
+  conversationId: string,
+  reply: string,
+): Promise<{ reply: string; handoff: boolean }> {
+  const marker = LINK_MARKERS.find((m) => new RegExp(m.re.source).test(reply));
+  if (!marker) return { reply, handoff: false };
+  const { data: conv } = await admin.from("conversations").select("contact_id").eq("id", conversationId).maybeSingle();
+  const r = conv?.contact_id
+    ? await linkDeCobranca(admin, { contactId: conv.contact_id, conversationId, forma: marker.forma })
+    : { ok: false as const, motivo: "sem_cpf" as const };
+  if (r.ok) {
+    let out = reply;
+    for (const m of LINK_MARKERS) out = out.replace(m.re, r.link);
+    // The old script talks about "Adquirir agora": that button only exists on the product page.
+    out = out.replace(/[^.\n]*Adquirir agora[^.\n]*\.?/gi, "").trim();
+    if (r.forma === "pix_automatico" && !/autoriza/i.test(out)) out = `${out}\n\n${PIX_NOTE}`;
+    if (!/comprovante/i.test(out)) out = `${out}\n\nDepois de pagar, me envie o comprovante por aqui, por favor.`;
+    return { reply: out, handoff: false };
+  }
+  console.warn(`[persona-auto-reply] no store link: ${r.motivo}`);
+  if (r.motivo === "ja_pago") {
+    return { reply: "Vi aqui que já existe um pagamento em andamento para essa cobrança. Se você já pagou, pode me enviar o comprovante por aqui, por favor?", handoff: false };
+  }
+  if (r.motivo === "nao_inadimplente") {
+    return { reply: "Verifiquei aqui e não encontrei mensalidade em aberto no seu cadastro. Posso te ajudar em mais alguma coisa?", handoff: false };
+  }
+  return { reply: "Vou passar para alguém da nossa equipe te enviar o link de pagamento e continuar com você pelo WhatsApp.", handoff: true };
+}
+
+/** Prompt block from the CPF lookup (guide 4.2); replaces the Carteira block. */
+async function loadConsultaContext(
+  // deno-lint-ignore no-explicit-any
+  admin: any,
+  conversationId: string,
+): Promise<string> {
+  const { data: conv } = await admin.from("conversations").select("contact_id").eq("id", conversationId).maybeSingle();
+  const cpf = conv?.contact_id ? await cpfDoContato(admin, conv.contact_id) : null;
+  if (!cpf) return contextoDaConsulta(null, "CPF não cadastrado");
+  try {
+    return contextoDaConsulta(await consultarCliente(cpf));
+  } catch (e) {
+    return contextoDaConsulta(null, e instanceof Error ? e.message.slice(0, 80) : "erro");
+  }
 }
 
 /**

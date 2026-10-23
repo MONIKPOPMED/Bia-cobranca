@@ -15,8 +15,9 @@ import { sendText } from "../_shared/evolution/index.ts";
 import { recordOutgoingWhatsApp } from "../_shared/whatsapp-history.ts";
 import { phoneVariants } from "../_shared/phone.ts";
 import { PAYMENT_LINKS, type PaymentMethod } from "../_shared/payment-links.ts";
-import { notifyTeam } from "../_shared/team-handoff.ts";
-import { findToolCall } from "../_shared/voice/tool-call.ts";
+import { loadWhatsAppSender, notifyTeam } from "../_shared/team-handoff.ts";
+import { findToolCall, type ToolCallRow } from "../_shared/voice/tool-call.ts";
+import { linkDeCobranca, lojaAtiva, textoDoLink } from "../_shared/loja-popmed.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -59,6 +60,13 @@ Deno.serve(async (req) => {
     .in("phone_number", phoneVariants(customerPhone ?? ""))
     .limit(1);
   const contact = contacts?.[0];
+
+  // Store integration on (LOJA_POPMED_ATIVA): the link is a store order with
+  // the value from the CPF lookup, for any number of overdue installments
+  // (guide 4.2) — not the fixed one-installment product links.
+  if (lojaAtiva()) {
+    return j(await sendStoreLink(admin, call, contact ?? null, customerPhone ?? "", metodo));
+  }
 
   const { count: openCount } = contact
     ? await admin
@@ -154,6 +162,85 @@ Deno.serve(async (req) => {
     return j({ ok: false, message: TEAM_WILL_SEND });
   }
 });
+
+/**
+ * LOJA_POPMED_ATIVA path: store order link (CPF lookup → order), sent on the
+ * customer's WhatsApp conversation, which also keeps the "one link per
+ * customer" state. Returns what the agent should say.
+ */
+async function sendStoreLink(
+  // deno-lint-ignore no-explicit-any
+  admin: any,
+  call: ToolCallRow,
+  contact: { id: string; name: string | null; phone_number: string | null } | null,
+  customerPhone: string,
+  metodo: PaymentMethod,
+): Promise<{ ok: boolean; message: string }> {
+  const askTeam = (why: string) =>
+    notifyTeam(admin, {
+      accountId: call.account_id,
+      origin: "Ligação",
+      customerPhone,
+      contactId: contact?.id ?? null,
+      reason: `Cliente quer pagar por ${metodo === "pix" ? "Pix" : "cartão"} — enviar o link de pagamento (${why}).`,
+    }).catch(() => false);
+  const recordOutcome = (payment_link: Record<string, unknown>) =>
+    admin.from("voice_calls")
+      .update({ metadata: { ...(call.metadata ?? {}), payment_link: { ...payment_link, metodo, via: "loja", at: new Date().toISOString() } } })
+      .eq("id", call.id);
+
+  const sender = await loadWhatsAppSender(admin, call.account_id);
+  if (!contact || !sender) {
+    await askTeam(!contact ? "cliente não encontrado na carteira" : "WhatsApp desconectado");
+    await recordOutcome({ sent: false, reason: !contact ? "sem_contato" : "whatsapp_desconectado" });
+    return { ok: false, message: TEAM_WILL_SEND };
+  }
+
+  // The customer's WhatsApp conversation (same as the campaign/follow-ups).
+  const { data: channel } = await admin.from("channels").select("id").eq("account_id", call.account_id).eq("channel_type", "whatsapp").eq("enabled", true).maybeSingle();
+  const { data: inbox } = channel ? await admin.from("inboxes").select("id").eq("channel_id", channel.id).maybeSingle() : { data: null };
+  const { data: conversationId } = inbox
+    ? await admin.rpc("get_or_create_open_conversation", { p_account_id: call.account_id, p_contact_id: contact.id, p_inbox_id: inbox.id })
+    : { data: null };
+  if (!conversationId) {
+    await askTeam("conversa de WhatsApp não encontrada");
+    await recordOutcome({ sent: false, reason: "sem_conversa" });
+    return { ok: false, message: TEAM_WILL_SEND };
+  }
+
+  const r = await linkDeCobranca(admin, { contactId: contact.id, conversationId, forma: metodo === "pix" ? "pix_automatico" : "cartao" });
+  if (!r.ok) {
+    await recordOutcome({ sent: false, reason: r.motivo });
+    if (r.motivo === "ja_pago") return { ok: false, message: "Diga ao cliente que já existe um pagamento em andamento para essa cobrança e peça para enviar o comprovante pelo WhatsApp." };
+    if (r.motivo === "nao_inadimplente") return { ok: false, message: "Diga ao cliente que, verificando agora, não há mensalidade em aberto no cadastro. Não cobre." };
+    await askTeam(r.motivo);
+    return { ok: false, message: TEAM_WILL_SEND };
+  }
+
+  const firstName = (contact.name ?? "").trim().split(/\s+/)[0];
+  const hello = firstName ? `Oi, ${firstName.charAt(0).toUpperCase()}${firstName.slice(1).toLowerCase()}!` : "Oi!";
+  const { data: settings } = await admin.from("company_settings").select("company_name").eq("account_id", call.account_id).maybeSingle();
+  const text = `${hello} Aqui é a Bia, da ${settings?.company_name ?? "POPMED"}. Como combinamos na ligação: ${textoDoLink(r)}`;
+  try {
+    const sent = await sendText({ ...sender, number: contact.phone_number ?? customerPhone, text });
+    await recordOutcome({ sent: true, message_id: sent.messageId ?? null, valor: r.valor, quantidade: r.quantidade });
+    await recordOutgoingWhatsApp(admin, {
+      accountId: call.account_id,
+      contactId: contact.id,
+      phone: contact.phone_number ?? customerPhone,
+      text,
+      personaId: call.persona_id ?? null,
+      messageId: sent.messageId ?? null,
+      kind: "payment_link",
+    });
+    return { ok: true, message: "Link enviado pelo WhatsApp. Diga ao cliente que o link já chegou no WhatsApp dele e peça o comprovante depois de pagar." };
+  } catch (err) {
+    console.error("[voice-send-payment-link] store link send failed", err);
+    await askTeam("falha ao enviar o link pelo WhatsApp");
+    await recordOutcome({ sent: false, reason: "falha_envio" });
+    return { ok: false, message: TEAM_WILL_SEND };
+  }
+}
 
 function timingSafeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
