@@ -162,8 +162,11 @@ export class LojaPopmed {
     if (espaco < 1) throw invalido("Informe nome e sobrenome");
     const telefone = telefoneDoSite(c.telefone);
     if (!telefone) throw invalido("Telefone inválido (DDD + número)");
-    const email = limpar(c.email ?? "").toLowerCase();
-    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw invalido("E-mail inválido");
+    // Required by the Pagar.me plugin, and the "pay for order" page has no field
+    // for it (guide 3.2, 23/10): the customer's, else one per CPF — never a
+    // fixed address shared by everyone (Pagar.me would merge customers).
+    const email = limpar(c.email ?? "").toLowerCase() || `${cpf}@popmed.com.br`;
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw invalido("E-mail inválido");
     const cep = soDigitos(c.cep ?? "");
     const temEndereco = cep.length === 8 && !!limpar(c.logradouro ?? "") && !!limpar(c.numero ?? "") && !!limpar(c.cidade ?? "");
     const uf = limpar(c.uf ?? "").toUpperCase();
@@ -178,9 +181,7 @@ export class LojaPopmed {
       billing: {
         first_name: nome.slice(0, espaco),
         last_name: nome.slice(espaco + 1),
-        // Only when the customer has one (never invent it): the store rejects an
-        // empty string as an invalid billing param (400 rest_invalid_param, 21/10).
-        ...(email ? { email } : {}),
+        email,
         phone: telefone,
         cpf,
         persontype: "F",
@@ -432,11 +433,11 @@ export async function linkDeCobranca(
     }
   }
 
-  const { data: contact } = await admin.from("contacts").select("name, phone_number").eq("id", opts.contactId).maybeSingle();
+  const { data: contact } = await admin.from("contacts").select("name, phone_number, email").eq("id", opts.contactId).maybeSingle();
   try {
     let criado: { id: number; link: string; total: string };
     try {
-      criado = await loja.criarPedidoMensalidades(opcao, opts.forma, { nome: String(contact?.name ?? ""), telefone: String(contact?.phone_number ?? "") }, opts.conversationId);
+      criado = await loja.criarPedidoMensalidades(opcao, opts.forma, { nome: String(contact?.name ?? ""), telefone: String(contact?.phone_number ?? ""), email: contact?.email ?? undefined }, opts.conversationId);
     } catch (e) {
       // No answer may still mean created: look it up before giving up (guide item 4).
       const achado = e instanceof LojaError && e.incerta ? await loja.procurarPorConversa(opts.conversationId) : null;
