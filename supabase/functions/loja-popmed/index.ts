@@ -86,16 +86,23 @@ Deno.serve(async (req) => {
     if (acao === "produto") return j(await loja.produto(forma));
 
     if (acao === "teste_criar") {
+      // Real-payment test with Leonardo (guide item 13) may use a small amount,
+      // e.g. R$ 1,00 — only here, only with the test CPF.
+      const centavosTeste = body.valorCentavos === undefined ? 3490 : Number(body.valorCentavos);
+      if (!Number.isInteger(centavosTeste) || centavosTeste < 100 || centavosTeste > 99900) {
+        return j({ erro: "valorCentavos de teste deve ser inteiro entre 100 e 99900" }, 400);
+      }
+      const reaisTeste = `${Math.floor(centavosTeste / 100)}.${String(centavosTeste % 100).padStart(2, "0")}`;
       // A "new sale"-shaped option for the test CPF only: no installment metas,
       // so even if it slipped past the 10 minutes nothing would be written off.
       const opcao: Opcao = {
         quantidade: 1,
         mensalidades: [],
-        valor_sem_desconto: 34.9,
+        valor_sem_desconto: centavosTeste / 100,
         desconto_percentual: 0,
-        valor: 34.9,
+        valor: centavosTeste / 100,
         pedido: {
-          total: "34.90",
+          total: reaisTeste,
           billing_cpf: CPF_TESTE,
           meta_data: [{ key: "_popmed_origem", value: "ia-lovable" }],
           formas: Object.values(FORMAS).map((f) => ({ payment_method: f.gateway, produto: f.produto })),
@@ -109,7 +116,7 @@ Deno.serve(async (req) => {
         numero: body.numero ? String(body.numero) : undefined,
         cidade: body.cidade ? String(body.cidade) : undefined,
         uf: body.uf ? String(body.uf) : undefined,
-      }, `teste-${crypto.randomUUID()}`);
+      }, `teste-${crypto.randomUUID()}`, Math.min(centavosTeste, 2990));
       console.log(`[loja-popmed] teste_criar pedido=${criado.id} total=${criado.total} forma=${forma}`);
       return j({ ...criado, aviso: "Cancele em menos de 10 minutos (acao: cancelar)." });
     }

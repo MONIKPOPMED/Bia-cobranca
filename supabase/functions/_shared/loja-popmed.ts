@@ -137,14 +137,21 @@ export class LojaPopmed {
    * (guide 4.2: never recalculate). Checks the created order and cancels it
    * if anything does not match.
    */
-  async criarPedidoMensalidades(opcao: Opcao, forma: Forma, c: ClienteLoja, conversa: string) {
+  async criarPedidoMensalidades(
+    opcao: Opcao,
+    forma: Forma,
+    c: ClienteLoja,
+    conversa: string,
+    /** Only the admin test console lowers it (real-payment test with Leonardo). */
+    minimoCentavos = VALOR_MINIMO_CENTAVOS,
+  ) {
     if (!Object.hasOwn(FORMAS, forma)) throw invalido("Forma de pagamento inválida");
     const f = FORMAS[forma];
     if (!opcao?.pedido?.formas?.some((x) => x.payment_method === f.gateway && Number(x.produto) === f.produto)) {
       throw invalido("Forma de pagamento não oferecida nesta opção");
     }
     const valorCentavos = centavos(opcao.pedido.total);
-    if (!Number.isInteger(valorCentavos) || valorCentavos < VALOR_MINIMO_CENTAVOS || valorCentavos > VALOR_MAXIMO_CENTAVOS) {
+    if (!Number.isInteger(valorCentavos) || valorCentavos < minimoCentavos || valorCentavos > VALOR_MAXIMO_CENTAVOS) {
       throw invalido("Valor fora da faixa permitida");
     }
     if (!limpar(conversa)) throw invalido("Conversa não informada");
