@@ -8,6 +8,7 @@
 import { phoneVariants } from "../phone.ts";
 import { discountPctFor } from "../payment-links.ts";
 import { spokenAreaAndEnding, spokenPhone, supportDigits } from "../handoff.ts";
+import { consultarCliente, cpfDoContato, lojaAtiva, opcaoPrincipal } from "../loja-popmed.ts";
 
 export const DEFAULT_DYNAMIC_VARIABLES: Record<string, string> = {
   company_name: "nossa empresa",
@@ -118,6 +119,41 @@ export function debtVariables(open: OpenDebt[], now = new Date()): Record<string
   };
 }
 
+/** Call variables from the CPF lookup (LOJA_POPMED_ATIVA). Empty = keep the Carteira ones. */
+async function consultaVariables(
+  // deno-lint-ignore no-explicit-any
+  supabase: any,
+  contactId: string,
+): Promise<Record<string, string>> {
+  const cpf = await cpfDoContato(supabase, contactId);
+  if (!cpf) return { regra_pagamento: "Não foi possível confirmar a pendência no sistema. Não informe valores: passe o caso para alguém da nossa equipe." };
+  let c;
+  try {
+    c = await consultarCliente(cpf);
+  } catch {
+    return { regra_pagamento: "Não foi possível confirmar a pendência no sistema. Não informe valores: passe o caso para alguém da nossa equipe." };
+  }
+  if (c.situacao !== "inadimplente") {
+    return { regra_pagamento: "O sistema mostra que o cliente NÃO tem mensalidade em aberto agora. Não cobre: agradeça, pergunte se pode ajudar em algo e encerre." };
+  }
+  const o = opcaoPrincipal(c);
+  if (c.sem_opcao || !o) {
+    return { regra_pagamento: "O cliente tem mensalidades em aberto, mas o link automático não é possível. Não informe valores: passe o caso para alguém da nossa equipe." };
+  }
+  const n = o.quantidade;
+  const parcelas = n === 1 ? "1 mensalidade" : `${n} mensalidades`;
+  return {
+    valor_formatado: brl(o.valor_sem_desconto),
+    valor_a_pagar_formatado: brl(o.valor),
+    desconto_pct: String(o.desconto_percentual),
+    parcelas_em_atraso: String(n),
+    max_parcelas: "1",
+    regra_pagamento: o.desconto_percentual > 0
+      ? `O cliente tem ${parcelas} em atraso, total de ${brl(o.valor_sem_desconto)}. À vista, no cartão ou Pix Automático, tem ${o.desconto_percentual}% de desconto: paga ${brl(o.valor)}. Pode mencionar esse desconto. Não existe parcelamento.`
+      : `O cliente tem ${parcelas} em atraso. O valor a pagar é ${brl(o.valor)}, à vista, no cartão ou Pix Automático. NÃO existe desconto neste caso — não fale em desconto de forma alguma; diga só o valor. Não existe parcelamento.`,
+  };
+}
+
 /**
  * Full variable set for one call: defaults + company, agent and — when the
  * customer's phone is in the Carteira — the customer's first name and debts.
@@ -170,6 +206,9 @@ export async function buildCallDynamicVariables(
       .order("vencimento", { ascending: true })
       .limit(50);
     Object.assign(vars, debtVariables((debts ?? []) as OpenDebt[]));
+    // Store integration on: the CPF lookup decides whether and how much to
+    // charge (guide 4.2), not the imported Carteira.
+    if (lojaAtiva()) Object.assign(vars, await consultaVariables(supabase, contact.id));
   }
   vars.saudacao = greeting(firstName, vars.agent_name, vars.company_name);
   return vars;

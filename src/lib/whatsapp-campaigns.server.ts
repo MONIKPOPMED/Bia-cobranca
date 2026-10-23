@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json } from "@/integrations/supabase/types";
+import { ConsultaError, consultarCpf, lojaAtiva, opcaoPrincipal } from "./popmed-consulta.server";
 
 type AdminClient = SupabaseClient<Database>;
 type ClaimedRecipient = Database["public"]["Tables"]["whatsapp_campaign_recipients"]["Row"];
@@ -153,7 +154,18 @@ async function dispatchOne(admin: AdminClient, lovableApiKey: string, row: Claim
   if (!channel?.enabled || config.evolution_instance_status !== "connected") throw new Error("WhatsApp desconectado");
 
   const debt = asObject(row.debt_data);
-  const message = firstMessage(settings?.company_name ?? null, debt);
+  // Store integration on: ask POPMED's system right before the message
+  // (guide 4.2, 21/10) — never charge from the stale Carteira.
+  let valores: { n: number; total: number; pct: number; final: number } | undefined;
+  if (lojaAtiva()) {
+    const r = await checarAntesDeCobrar(admin, row.contact_id);
+    if (r.pular) {
+      await admin.from("whatsapp_campaign_recipients").update({ status: "skipped", skip_reason: r.pular }).eq("id", row.id);
+      return;
+    }
+    valores = r.valores;
+  }
+  const message = firstMessage(settings?.company_name ?? null, debt, valores);
   await admin.from("whatsapp_campaign_recipients").update({ status: "sending", generated_message: message }).eq("id", row.id);
   await admin.from("contact_inboxes").upsert({ contact_id: row.contact_id, inbox_id: campaign.inbox_id, source_id: `evolution:whatsapp:${row.phone_number}` }, { onConflict: "contact_id,inbox_id", ignoreDuplicates: true });
   const { data: conversationId, error: conversationError } = await admin.rpc("get_or_create_open_conversation", { p_account_id: campaign.account_id, p_contact_id: row.contact_id, p_inbox_id: campaign.inbox_id });
@@ -192,23 +204,59 @@ async function dispatchOne(admin: AdminClient, lovableApiKey: string, row: Claim
  * Same payment rule as the calls (supabase/functions/_shared/payment-links.ts):
  * à vista by PIX or card, no installments; 3 or more overdue get 10% off.
  */
-function firstMessage(companyName: string | null, debt: Record<string, unknown>) {
+function firstMessage(
+  companyName: string | null,
+  debt: Record<string, unknown>,
+  /** From the CPF lookup (LOJA_POPMED_ATIVA); otherwise the Carteira + POPMED rule. */
+  valores?: { n: number; total: number; pct: number; final: number },
+) {
   const brl = (v: number) => new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(v);
   const first = String(debt.debtor_name ?? "").trim().split(/\s+/)[0] ?? "";
   const name = first ? `, ${first.charAt(0).toUpperCase()}${first.slice(1).toLowerCase()}` : "";
   const company = companyName || "POPMED";
-  const n = Math.max(1, Number(debt.debt_count ?? 1));
-  const total = Number(debt.total_open ?? 0);
-  const pct = n >= 3 ? 10 : 0;
+  const n = valores?.n ?? Math.max(1, Number(debt.debt_count ?? 1));
+  const total = valores?.total ?? Number(debt.total_open ?? 0);
+  const pct = valores?.pct ?? (n >= 3 ? 10 : 0);
+  const final = valores?.final ?? Math.round(total * (100 - pct)) / 100;
   const owed = n === 1
     ? `Sua mensalidade está em atraso, consta valor em aberto de ${brl(total)}.`
     : `Você tem ${n} mensalidades em atraso, consta valor em aberto de ${brl(total)}.`;
   const discount = pct > 0
-    ? ` Pagando à vista, você tem ${pct}% de desconto e fica ${brl(Math.round(total * (100 - pct)) / 100)}.`
+    ? ` Pagando à vista, você tem ${pct}% de desconto e fica ${brl(final)}.`
     : "";
   return `${greeting()}${name}. Sou a Bia, da ${company}, tudo bem? ` +
     "Vim te lembrar que você conta com Clínico Geral 24 horas, todos os dias, com consultas ilimitadas e atendimento sem sair de casa. " +
     `${owed}${discount} Você prefere pagar com cartão de crédito ou PIX?`;
+}
+
+/**
+ * Guide 4.2 (21/10): before each collection message, the CPF lookup decides.
+ * Skip whoever is no longer overdue, or whose recent store order (15 days)
+ * may already be paid; lookup errors pause/retry instead of charging blind.
+ */
+async function checarAntesDeCobrar(admin: AdminClient, contactId: string): Promise<{ pular?: string; valores?: { n: number; total: number; pct: number; final: number } }> {
+  const { data: perfil } = await admin.from("debtor_profiles").select("doc_number").eq("contact_id", contactId).limit(1).maybeSingle();
+  const cpf = String(perfil?.doc_number ?? "").replace(/\D/g, "");
+  if (cpf.length !== 11) return { pular: "consulta: CPF não cadastrado" };
+
+  const { data: convs } = await admin.from("conversations").select("additional_attributes").eq("contact_id", contactId);
+  const recente = (convs ?? []).some((c) => {
+    const p = asObject(asObject(c.additional_attributes as Json).loja_pedido as Json);
+    return typeof p.criado_em === "string" && Date.now() - new Date(p.criado_em).getTime() < 15 * 86_400_000;
+  });
+  if (recente) return { pular: "consulta: link da loja enviado nos últimos 15 dias" };
+
+  let c;
+  try {
+    c = await consultarCpf(cpf);
+  } catch (error) {
+    const status = error instanceof ConsultaError ? error.status : 503;
+    throw new ProviderError(status === 401 || status === 404 ? 403 : 503, error instanceof Error ? error.message : "Consulta indisponível");
+  }
+  if (c.situacao !== "inadimplente") return { pular: `consulta: ${c.situacao}` };
+  const o = opcaoPrincipal(c);
+  if (c.sem_opcao || !o) return { pular: `consulta: sem opção (${c.sem_opcao ?? "acima do limite"})` };
+  return { valores: { n: o.quantidade, total: o.valor_sem_desconto, pct: o.desconto_percentual, final: o.valor } };
 }
 
 async function sendEvolutionText(config: Record<string, unknown>, number: string, text: string) {

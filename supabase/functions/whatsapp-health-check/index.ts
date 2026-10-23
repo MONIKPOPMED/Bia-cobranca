@@ -22,6 +22,7 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.74.0";
 import { checkWhatsAppNumbers, getConnectionState, normalizeStatus } from "../_shared/evolution/index.ts";
+import { LojaPopmed, lojaAtiva } from "../_shared/loja-popmed.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -217,7 +218,20 @@ Deno.serve(async (req) => {
     results.push({ channel_id: ch.id, state: raw, problem, emailed: email ? emailResult?.ok ?? false : null });
   }
 
-  return j({ ok: true, checked: results.length, results });
+  // Store orders the Bia created (LOJA_POPMED_ATIVA) are never expired by the
+  // store (guide item 6): cancel the unpaid ones older than 7 days. Piggybacks
+  // on this 5-minute cron, at most once an hour.
+  let pedidosCancelados: number | null = null;
+  if (lojaAtiva() && new Date().getUTCMinutes() < 5) {
+    try {
+      pedidosCancelados = await new LojaPopmed().cancelarVencidos(7);
+      if (pedidosCancelados) console.log(`[whatsapp-health-check] pedidos vencidos cancelados=${pedidosCancelados}`);
+    } catch (e) {
+      console.error("[whatsapp-health-check] cancelar pedidos vencidos falhou", e);
+    }
+  }
+
+  return j({ ok: true, checked: results.length, results, pedidos_vencidos_cancelados: pedidosCancelados });
 });
 
 function j(body: unknown, status = 200) {

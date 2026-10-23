@@ -219,13 +219,7 @@ export class LojaPopmed {
   async situacao(id: number): Promise<{ situacao: Situacao; status: string; total: string }> {
     const p = await this.pedir("GET", `orders/${id}`);
     const status = String(p.status ?? "");
-    const situacao: Situacao = status === "pending" ? "aguardando"
-      : status === "failed" ? "recusado"
-      : status === "processing" || status === "completed" ? "pago"
-      : status === "on-hold" ? "qr_gerado" // pix automático: does NOT mean paid
-      : status === "cancelled" ? "cancelado"
-      : status === "refunded" ? "estornado" : "outro";
-    return { situacao, status, total: String(p.total ?? "") };
+    return { situacao: situacaoDoStatus(status), status, total: String(p.total ?? "") };
   }
 
   /** Cancels only pending/failed (never on-hold pix: it may already be paid). */
@@ -234,6 +228,32 @@ export class LojaPopmed {
     if (atual.status !== "pending" && atual.status !== "failed") return { cancelado: false, status: String(atual.status) };
     const p = await this.pedir("PUT", `orders/${id}`, { status: "cancelled" });
     return { cancelado: p.status === "cancelled", status: String(p.status) };
+  }
+
+  /** Status + link of an existing order (the link is never stored on our side). */
+  async pedidoComLink(id: number): Promise<{ situacao: Situacao; status: string; total: string; link: string }> {
+    const p = await this.pedir("GET", `orders/${id}`);
+    const status = String(p.status ?? "");
+    return { situacao: situacaoDoStatus(status), status, total: String(p.total ?? ""), link: String(p.payment_url ?? "") };
+  }
+
+  /**
+   * Guide item 6: the store never expires API orders. Cancels the AI's
+   * pending/failed orders older than `dias` (never on-hold pix: it may be paid).
+   */
+  async cancelarVencidos(dias = 7): Promise<number> {
+    const antes = new Date(Date.now() - dias * 86_400_000).toISOString().slice(0, 19);
+    let cancelados = 0;
+    for (const status of ["pending", "failed"]) {
+      const lista = await this.pedir("GET", `orders?status=${status}&before=${antes}&dates_are_gmt=true&per_page=100`);
+      for (const p of Array.isArray(lista) ? lista : []) {
+        const metas: Array<{ key: string; value: unknown }> = Array.isArray(p.meta_data) ? p.meta_data : [];
+        if (!metas.some((m) => m.key === "_popmed_origem" && m.value === ORIGEM)) continue;
+        const r = await this.cancelar(Number(p.id)).catch(() => null);
+        if (r?.cancelado) cancelados++;
+      }
+    }
+    return cancelados;
   }
 
   /** After an "incerta" failure: this conversation's order from the last minutes, if any. */
@@ -282,6 +302,156 @@ export class LojaPopmed {
     }
     throw new LojaError(`Loja respondeu HTTP ${resp.status}${msg ? " - " + msg : ""}`, resp.status, resp.status >= 500 && metodo !== "GET");
   }
+}
+
+function situacaoDoStatus(status: string): Situacao {
+  return status === "pending" ? "aguardando"
+    : status === "failed" ? "recusado"
+    : status === "processing" || status === "completed" ? "pago"
+    : status === "on-hold" ? "qr_gerado" // pix automático: does NOT mean paid
+    : status === "cancelled" ? "cancelado"
+    : status === "refunded" ? "estornado" : "outro";
+}
+
+// ── The Bia's use of it (off until LOJA_POPMED_ATIVA) ──────────────────────
+
+/**
+ * Master switch. Off (default) = the Bia keeps the fixed product links and
+ * the Carteira values, exactly as before. Turned on after the real payment
+ * test with Leonardo (guide item 13) by setting the secret LOJA_POPMED_ATIVA=sim.
+ */
+export function lojaAtiva(): boolean {
+  return /^(1|true|sim|yes)$/i.test((Deno.env.get("LOJA_POPMED_ATIVA") ?? "").trim());
+}
+
+/** Payment link stored on the conversation (never the URL: it is a password — guide 3.2). */
+type PedidoConversa = { id: number; forma: Forma; total: string; criado_em: string };
+
+// deno-lint-ignore no-explicit-any
+export async function cpfDoContato(admin: any, contactId: string): Promise<string | null> {
+  const { data } = await admin
+    .from("debtor_profiles")
+    .select("doc_type, doc_number")
+    .eq("contact_id", contactId)
+    .limit(1)
+    .maybeSingle();
+  const cpf = soDigitos(String(data?.doc_number ?? ""));
+  return cpfValido(cpf) ? cpf : null;
+}
+
+/** The option the Bia offers: the overdue ones (guide 4.2 — the first option). */
+export function opcaoPrincipal(c: Consulta): Opcao | null {
+  const o = (c.opcoes ?? [])[0];
+  if (!o) return null;
+  return centavos(o.pedido?.total) <= VALOR_MAXIMO_CENTAVOS ? o : null;
+}
+
+/** Instructions block for the WhatsApp agent, from the CPF lookup (not the Carteira). */
+export function contextoDaConsulta(c: Consulta | null, motivoSemConsulta?: string): string {
+  const linhas = ["SITUAÇÃO NO SISTEMA DA POPMED (consulta pelo CPF agora — vale mais que qualquer outro dado):"];
+  if (!c) {
+    linhas.push(`- Não foi possível consultar (${motivoSemConsulta ?? "erro"}). NÃO informe valores e NÃO mande link: passe o atendimento para alguém da nossa equipe.`);
+    return linhas.join("\n");
+  }
+  if (c.situacao !== "inadimplente") {
+    linhas.push(`- Situação: ${c.situacao}. O cliente NÃO tem mensalidade em aberto para cobrar. Não cobre; se ele disser que pagou, agradeça; se tiver dúvida sobre o cadastro, passe para alguém da nossa equipe.`);
+    return linhas.join("\n");
+  }
+  const o = opcaoPrincipal(c);
+  if (c.sem_opcao || !o) {
+    linhas.push("- O cliente tem mensalidades em aberto, mas o sistema não permite gerar o link automático. NÃO mande link: passe o atendimento para alguém da nossa equipe.");
+    return linhas.join("\n");
+  }
+  const desconto = o.desconto_percentual > 0
+    ? ` Com ${o.desconto_percentual}% de desconto à vista (de ${brl(o.valor_sem_desconto)} por ${brl(o.valor)}).`
+    : " Sem desconto (não fale em desconto).";
+  linhas.push(
+    `- Mensalidades em atraso: ${o.quantidade}. Valor a pagar à vista: ${brl(o.valor)}.${desconto}`,
+    "- Formas: cartão de crédito (à vista) ou Pix Automático. Não existe parcelamento.",
+    "- Para mandar o link, escreva exatamente [[LINK_CARTAO]] ou [[LINK_PIX]] na mensagem, conforme a forma que o cliente escolheu. NUNCA escreva endereço de site nem os links antigos de produto: o sistema troca a marcação pelo link certo.",
+    "- Isto SUBSTITUI a seção de links de pagamento do roteiro, inclusive a regra de passar para a equipe quando houver mais de uma mensalidade: o link agora vale para qualquer quantidade.",
+    "- Pix Automático: avise que o mesmo Pix paga esta cobrança e autoriza as próximas mensalidades (R$ 49,90) direto no banco, e que, se o banco perguntar um valor máximo, não deve colocar menos de R$ 49,90.",
+    "- Depois de pagar, peça o comprovante por aqui.",
+  );
+  return linhas.join("\n");
+}
+
+const brl = (n: number) => new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(n);
+
+export type LinkCobranca =
+  | { ok: true; link: string; valor: number; quantidade: number; desconto_percentual: number; forma: Forma; reutilizado: boolean }
+  | { ok: false; motivo: "sem_cpf" | "consulta_falhou" | "nao_inadimplente" | "sem_opcao" | "ja_pago" | "renegociacao" | "loja_falhou"; detalhe?: string };
+
+/**
+ * The payment link for a conversation (WhatsApp or the call's WhatsApp
+ * follow-up). Guide rules: look the CPF up right before creating; one link
+ * per customer; reuse it if nothing changed; never charge again an order
+ * that is paid or has the pix QR generated; changing value/method only in
+ * the first 10 minutes, after that the team takes over (item 8.2).
+ */
+export async function linkDeCobranca(
+  // deno-lint-ignore no-explicit-any
+  admin: any,
+  opts: { contactId: string; conversationId: string; forma: Forma },
+): Promise<LinkCobranca> {
+  const cpf = await cpfDoContato(admin, opts.contactId);
+  if (!cpf) return { ok: false, motivo: "sem_cpf" };
+  let consulta: Consulta;
+  try {
+    consulta = await consultarCliente(cpf);
+  } catch (e) {
+    return { ok: false, motivo: "consulta_falhou", detalhe: e instanceof Error ? e.message.slice(0, 200) : String(e) };
+  }
+  if (consulta.situacao !== "inadimplente") return { ok: false, motivo: "nao_inadimplente", detalhe: consulta.situacao };
+  const opcao = opcaoPrincipal(consulta);
+  if (consulta.sem_opcao || !opcao) return { ok: false, motivo: "sem_opcao", detalhe: consulta.sem_opcao ?? undefined };
+
+  const loja = new LojaPopmed();
+  const { data: conv } = await admin.from("conversations").select("additional_attributes").eq("id", opts.conversationId).maybeSingle();
+  const attrs = (conv?.additional_attributes ?? {}) as Record<string, unknown>;
+  const anterior = attrs.loja_pedido as PedidoConversa | undefined;
+
+  if (anterior?.id) {
+    const atual = await loja.pedidoComLink(anterior.id).catch(() => null);
+    if (atual && (atual.situacao === "pago" || atual.situacao === "qr_gerado")) return { ok: false, motivo: "ja_pago", detalhe: atual.status };
+    const mesmo = anterior.forma === opts.forma && centavos(anterior.total) === centavos(opcao.pedido.total);
+    if (atual && mesmo && (atual.situacao === "aguardando" || atual.situacao === "recusado") && atual.link) {
+      return { ok: true, link: atual.link, valor: opcao.valor, quantidade: opcao.quantidade, desconto_percentual: opcao.desconto_percentual, forma: opts.forma, reutilizado: true };
+    }
+    if (atual && (atual.situacao === "aguardando" || atual.situacao === "recusado")) {
+      const idadeMin = (Date.now() - new Date(anterior.criado_em).getTime()) / 60_000;
+      if (idadeMin > 10) return { ok: false, motivo: "renegociacao" }; // already imported with the first value
+      await loja.cancelar(anterior.id).catch(() => {});
+    }
+  }
+
+  const { data: contact } = await admin.from("contacts").select("name, phone_number").eq("id", opts.contactId).maybeSingle();
+  try {
+    let criado: { id: number; link: string; total: string };
+    try {
+      criado = await loja.criarPedidoMensalidades(opcao, opts.forma, { nome: String(contact?.name ?? ""), telefone: String(contact?.phone_number ?? "") }, opts.conversationId);
+    } catch (e) {
+      // No answer may still mean created: look it up before giving up (guide item 4).
+      const achado = e instanceof LojaError && e.incerta ? await loja.procurarPorConversa(opts.conversationId) : null;
+      if (!achado) throw e;
+      criado = achado;
+    }
+    const pedido: PedidoConversa = { id: criado.id, forma: opts.forma, total: criado.total, criado_em: new Date().toISOString() };
+    await admin.from("conversations").update({ additional_attributes: { ...attrs, loja_pedido: pedido } }).eq("id", opts.conversationId);
+    console.log(`[loja-popmed] pedido=${criado.id} total=${criado.total} forma=${opts.forma}`);
+    return { ok: true, link: criado.link, valor: opcao.valor, quantidade: opcao.quantidade, desconto_percentual: opcao.desconto_percentual, forma: opts.forma, reutilizado: false };
+  } catch (e) {
+    return { ok: false, motivo: "loja_falhou", detalhe: e instanceof Error ? e.message.slice(0, 200) : String(e) };
+  }
+}
+
+/** Customer-facing text around the link. */
+export function textoDoLink(r: Extract<LinkCobranca, { ok: true }>): string {
+  const como = r.forma === "cartao" ? "no cartão de crédito, à vista" : "por Pix Automático";
+  const pix = r.forma === "pix_automatico"
+    ? "\n\nNo Pix Automático, o mesmo Pix paga esta cobrança e autoriza as próximas mensalidades (R$ 49,90) no seu banco. Se o banco perguntar um valor máximo, não coloque menos de R$ 49,90."
+    : "";
+  return `Segue o link para pagar ${brl(r.valor)} ${como}:\n${r.link}${pix}\n\nDepois de pagar, me envie o comprovante por aqui, por favor.`;
 }
 
 // ---------- helpers ----------
