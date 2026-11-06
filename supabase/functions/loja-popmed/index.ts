@@ -13,7 +13,10 @@
 // Logs only order id, status and total.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.74.0";
-import { consultarCliente, FORMAS, type Forma, LojaError, LojaPopmed, type Opcao } from "../_shared/loja-popmed.ts";
+import { consultarCliente, FORMAS, type Forma, linkDeCobranca, LojaError, LojaPopmed, type Opcao, textoDoLinkWhatsApp } from "../_shared/loja-popmed.ts";
+import { sendText } from "../_shared/evolution/index.ts";
+import { loadWhatsAppSender } from "../_shared/team-handoff.ts";
+import { recordOutgoingWhatsApp } from "../_shared/whatsapp-history.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -60,6 +63,27 @@ Deno.serve(async (req) => {
         tinha_espacos_aspas_ou_bearer: bruta !== limpa,
         sha256: hash,
       });
+    }
+
+    // 06/11: 3 links went out cut ("https://popmed.com."). Resends the link of
+    // the order already on the conversation (linkDeCobranca reuses it after a
+    // fresh CPF lookup), in POPMED's fixed text, and records it in the chat.
+    if (acao === "reenviar_link") {
+      const conversationId = String(body.conversationId ?? "");
+      const { data: conv } = await admin.from("conversations").select("account_id, contact_id, additional_attributes").eq("id", conversationId).maybeSingle();
+      const pedido = (conv?.additional_attributes as Record<string, unknown> | null)?.loja_pedido as { forma?: Forma } | undefined;
+      if (!conv?.contact_id || !pedido?.forma) return j({ erro: "conversa sem pedido da loja" }, 400);
+      const r = await linkDeCobranca(admin, { contactId: conv.contact_id, conversationId, forma: pedido.forma });
+      if (!r.ok) return j({ erro: `link não gerado: ${r.motivo}`, detalhe: r.detalhe ?? null }, 409);
+      const { data: contact } = await admin.from("contacts").select("name, phone_number").eq("id", conv.contact_id).maybeSingle();
+      const sender = await loadWhatsAppSender(admin, conv.account_id);
+      if (!sender || !contact?.phone_number) return j({ erro: "WhatsApp desconectado ou contato sem telefone" }, 409);
+      const corpo = textoDoLinkWhatsApp(r, contact.name ?? null).split("\n");
+      const text = [corpo[0].replace(/^Claro/, "Oi"), "Desculpe, o link que te mandei antes veio incompleto. Segue o correto:", ...corpo.slice(1)].join("\n");
+      const sent = await sendText({ ...sender, number: contact.phone_number, text });
+      await recordOutgoingWhatsApp(admin, { accountId: conv.account_id, contactId: conv.contact_id, phone: contact.phone_number, text, messageId: sent.messageId ?? null, kind: "payment_link" });
+      console.log(`[loja-popmed] reenviar_link conversa=${conversationId} reutilizado=${r.reutilizado}`);
+      return j({ ok: true, reutilizado: r.reutilizado, forma: r.forma, valor: r.valor });
     }
 
     if (acao === "consultar") {
