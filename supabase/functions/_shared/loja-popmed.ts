@@ -433,10 +433,20 @@ export function contextoDaConsulta(c: Consulta | null, motivoSemConsulta?: strin
     "- Formas: cartão de crédito (à vista) ou Pix Automático. Não existe parcelamento.",
     "- Para mandar o link, escreva exatamente [[LINK_CARTAO]] ou [[LINK_PIX]] na mensagem, conforme a forma que o cliente escolheu. NUNCA escreva endereço de site nem os links antigos de produto: o sistema troca a marcação pelo link certo.",
     "- Isto SUBSTITUI a seção de links de pagamento do roteiro, inclusive a regra de passar para a equipe quando houver mais de uma mensalidade: o link agora vale para qualquer quantidade.",
-    "- Pix Automático: avise que o mesmo Pix paga esta cobrança e autoriza as próximas mensalidades (R$ 49,90) direto no banco, e que, se o banco perguntar um valor máximo, não deve colocar menos de R$ 49,90.",
+    emBlackFriday()
+      ? "- Preço do plano (POPMED, 06/11): o plano aumentou para R$ 49,90, mas em novembro estamos em BLACK FRIDAY e a mensalidade sai por R$ 34,90 (até 30/11). Se falar das próximas mensalidades, diga exatamente isso, de forma positiva: é a melhor hora de pagar. A partir de dezembro, R$ 49,90."
+      : "- Preço do plano: as próximas mensalidades são R$ 49,90.",
+    "- Pix Automático: avise que o mesmo Pix paga esta cobrança e autoriza as próximas mensalidades direto no banco, e que, se o banco perguntar um valor máximo, não deve colocar menos de R$ 49,90.",
     "- Depois de pagar, peça o comprovante por aqui.",
   );
   return linhas.join("\n");
+}
+
+/** Pix Automático note sent with the link (06/11: plan R$ 49,90, Black Friday R$ 34,90 in November). */
+export function notaPixAutomatico(): string {
+  return emBlackFriday()
+    ? "O plano aumentou para R$ 49,90, mas em novembro estamos em Black Friday: a mensalidade sai por R$ 34,90. No Pix Automático, o mesmo Pix paga esta cobrança e autoriza as próximas mensalidades no seu banco (R$ 49,90 a partir de dezembro). Se o banco perguntar um valor máximo, não coloque menos de R$ 49,90."
+    : "No Pix Automático, o mesmo Pix paga esta cobrança e autoriza as próximas mensalidades (R$ 49,90) no seu banco. Se o banco perguntar um valor máximo, não coloque menos de R$ 49,90.";
 }
 
 const brl = (n: number) => new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(n);
@@ -514,7 +524,7 @@ export async function linkDeCobranca(
 export function textoDoLink(r: Extract<LinkCobranca, { ok: true }>): string {
   const como = r.forma === "cartao" ? "no cartão de crédito, à vista" : "por Pix Automático";
   const pix = r.forma === "pix_automatico"
-    ? "\n\nNo Pix Automático, o mesmo Pix paga esta cobrança e autoriza as próximas mensalidades (R$ 49,90) no seu banco. Se o banco perguntar um valor máximo, não coloque menos de R$ 49,90."
+    ? `\n\n${notaPixAutomatico()}`
     : "";
   const oque = r.reativacao ? `reativar seu plano por ${brl(r.valor)}` : `pagar ${brl(r.valor)}`;
   return `Segue o link para ${oque} ${como}:\n${r.link}${pix}\n\nDepois de pagar, me envie o comprovante por aqui, por favor.`;
