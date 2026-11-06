@@ -143,7 +143,20 @@ function LiveChatPage() {
         if (!lastMap.has(m.conversation_id)) lastMap.set(m.conversation_id, m);
       }
 
-      const list: ConversationListItem[] = rows.map((r) => {
+      // Conversations with no message at all (left by duplicated "@lid"
+      // webhooks as "WhatsApp (sem número)") don't show — POPMED, 06/11.
+      const semUltima = convIds.filter((id) => !lastMap.has(id));
+      const comMensagem = new Set<string>(lastMap.keys());
+      if (semUltima.length) {
+        const { data: algum } = await supabase
+          .from("messages")
+          .select("conversation_id")
+          .in("conversation_id", semUltima)
+          .limit(2000);
+        for (const m of algum ?? []) comMensagem.add(m.conversation_id);
+      }
+
+      const list: ConversationListItem[] = rows.filter((r) => comMensagem.has(r.id)).map((r) => {
         const c = cMap.get(r.contact_id);
         const lm = lastMap.get(r.id);
         return {
