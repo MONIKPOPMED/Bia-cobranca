@@ -14,8 +14,20 @@ export const Route = createFileRoute("/api/public/whatsapp-campaign-dispatch")({
           import("@/integrations/supabase/client.server"),
           import("@/lib/whatsapp-campaigns.server"),
         ]);
+        // Daily read of POPMED's Google Sheet → month's campaign (12h, Mon–Fri).
+        let planilha: unknown;
         try {
-          return Response.json({ ok: true, ...(await dispatchCampaignBatch(supabaseAdmin, lovableApiKey)) });
+          const { horaDeLerPlanilha, sincronizarPlanilha } = await import("@/lib/planilha-cobranca.server");
+          if (await horaDeLerPlanilha(supabaseAdmin)) {
+            planilha = await sincronizarPlanilha(supabaseAdmin);
+            console.log("[planilha-cobranca]", JSON.stringify(planilha));
+          }
+        } catch (error) {
+          console.error("[planilha-cobranca]", error);
+          planilha = { ok: false, erro: error instanceof Error ? error.message : String(error) };
+        }
+        try {
+          return Response.json({ ok: true, ...(await dispatchCampaignBatch(supabaseAdmin, lovableApiKey)), ...(planilha ? { planilha } : {}) });
         } catch (error) {
           console.error("[whatsapp-campaign-dispatch]", error);
           return Response.json({ error: error instanceof Error ? error.message : "Falha ao processar campanhas" }, { status: 500 });
