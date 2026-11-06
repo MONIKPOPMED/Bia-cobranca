@@ -354,11 +354,66 @@ export function opcaoPrincipal(c: Consulta): Opcao | null {
   return centavos(o.pedido?.total) <= VALOR_MAXIMO_CENTAVOS ? o : null;
 }
 
+/**
+ * Plan reactivation for a canceled (or new) customer — POPMED, 06/11: a
+ * customer canceled for non-payment is charged as a new sale (the lookup has
+ * no options for "cancelado" and old installments of a canceled plan can't
+ * be written off — guide 4.2) at the plan's price, R$ 49,90; R$ 34,90 in the
+ * November 2026 Black Friday (until 30/11, same as the site). Only with
+ * pode_vender_plano_novo. One month, never several in advance (guide 3.4).
+ */
+export const PRECO_PLANO_CENTAVOS = 4990;
+const FIM_BLACK_FRIDAY = new Date("2026-12-01T00:00:00-03:00");
+export function emBlackFriday(agora = new Date()): boolean {
+  return agora < FIM_BLACK_FRIDAY;
+}
+export function valorReativacaoCentavos(agora = new Date()): number {
+  return emBlackFriday(agora) ? 3490 : PRECO_PLANO_CENTAVOS;
+}
+export function podeReativar(c: Consulta): boolean {
+  return !!c.pode_vender_plano_novo && (c.situacao === "cancelado" || c.situacao === "novo");
+}
+export function opcaoReativacao(c: Consulta, cpf: string): Opcao | null {
+  if (!podeReativar(c)) return null;
+  const centavosReativacao = valorReativacaoCentavos();
+  const valor = centavosReativacao / 100;
+  return {
+    quantidade: 1,
+    mensalidades: [],
+    valor_sem_desconto: valor,
+    desconto_percentual: 0,
+    valor,
+    pedido: {
+      total: reais(centavosReativacao),
+      billing_cpf: soDigitos(cpf),
+      meta_data: [{ key: "_popmed_origem", value: "ia-lovable" }],
+      formas: Object.values(FORMAS).map((f) => ({ payment_method: f.gateway, produto: f.produto })),
+    },
+  };
+}
+
 /** Instructions block for the WhatsApp agent, from the CPF lookup (not the Carteira). */
 export function contextoDaConsulta(c: Consulta | null, motivoSemConsulta?: string): string {
   const linhas = ["SITUAÇÃO NO SISTEMA DA POPMED (consulta pelo CPF agora — vale mais que qualquer outro dado):"];
   if (!c) {
     linhas.push(`- Não foi possível consultar (${motivoSemConsulta ?? "erro"}). NÃO informe valores e NÃO mande link: passe o atendimento para alguém da nossa equipe.`);
+    return linhas.join("\n");
+  }
+  if (podeReativar(c)) {
+    const valor = brl(valorReativacaoCentavos() / 100);
+    linhas.push(
+      c.situacao === "cancelado"
+        ? "- Situação: plano CANCELADO por falta de pagamento. NÃO cobre mensalidades atrasadas nem valores antigos: ofereça a REATIVAÇÃO do plano (Clínico Geral 24 horas, todos os dias, consultas ilimitadas, sem sair de casa)."
+        : "- Situação: ainda não é cliente. Ofereça o plano (Clínico Geral 24 horas, todos os dias, consultas ilimitadas, sem sair de casa).",
+      emBlackFriday()
+        ? `- Valor: ${valor} no primeiro mês, à vista — preço especial de BLACK FRIDAY, só até 30 de novembro (o plano normal é R$ 49,90). Use isso como argumento: é a melhor hora de voltar. Os meses seguintes são R$ 49,90. Não ofereça outro desconto.`
+        : `- Valor: ${valor} no primeiro mês, à vista. Os meses seguintes também são R$ 49,90. Sem desconto (não fale em desconto).`,
+      "- Formas: cartão de crédito (à vista) ou Pix Automático. Não existe parcelamento.",
+      "- Para mandar o link, escreva exatamente [[LINK_CARTAO]] ou [[LINK_PIX]] na mensagem, conforme a forma que o cliente escolheu. NUNCA escreva endereço de site nem os links antigos de produto: o sistema troca a marcação pelo link certo.",
+      "- Isto SUBSTITUI a seção de links de pagamento do roteiro.",
+      "- Pix Automático: avise que o mesmo Pix paga o primeiro mês e autoriza as próximas mensalidades (R$ 49,90) direto no banco, e que, se o banco perguntar um valor máximo, não deve colocar menos de R$ 49,90.",
+      "- Depois de pagar, peça o comprovante por aqui.",
+    );
     return linhas.join("\n");
   }
   if (c.situacao !== "inadimplente") {
@@ -387,7 +442,7 @@ export function contextoDaConsulta(c: Consulta | null, motivoSemConsulta?: strin
 const brl = (n: number) => new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(n);
 
 export type LinkCobranca =
-  | { ok: true; link: string; valor: number; quantidade: number; desconto_percentual: number; forma: Forma; reutilizado: boolean }
+  | { ok: true; link: string; valor: number; quantidade: number; desconto_percentual: number; forma: Forma; reutilizado: boolean; reativacao: boolean }
   | { ok: false; motivo: "sem_cpf" | "consulta_falhou" | "nao_inadimplente" | "sem_opcao" | "ja_pago" | "renegociacao" | "loja_falhou"; detalhe?: string };
 
 /**
@@ -410,9 +465,11 @@ export async function linkDeCobranca(
   } catch (e) {
     return { ok: false, motivo: "consulta_falhou", detalhe: e instanceof Error ? e.message.slice(0, 200) : String(e) };
   }
-  if (consulta.situacao !== "inadimplente") return { ok: false, motivo: "nao_inadimplente", detalhe: consulta.situacao };
-  const opcao = opcaoPrincipal(consulta);
-  if (consulta.sem_opcao || !opcao) return { ok: false, motivo: "sem_opcao", detalhe: consulta.sem_opcao ?? undefined };
+  const reativa = opcaoReativacao(consulta, cpf);
+  if (!reativa && consulta.situacao !== "inadimplente") return { ok: false, motivo: "nao_inadimplente", detalhe: consulta.situacao };
+  const opcao = reativa ?? opcaoPrincipal(consulta);
+  if (!opcao || (!reativa && consulta.sem_opcao)) return { ok: false, motivo: "sem_opcao", detalhe: consulta.sem_opcao ?? undefined };
+  const reativacao = !!reativa;
 
   const loja = new LojaPopmed();
   const { data: conv } = await admin.from("conversations").select("additional_attributes").eq("id", opts.conversationId).maybeSingle();
@@ -424,7 +481,7 @@ export async function linkDeCobranca(
     if (atual && (atual.situacao === "pago" || atual.situacao === "qr_gerado")) return { ok: false, motivo: "ja_pago", detalhe: atual.status };
     const mesmo = anterior.forma === opts.forma && centavos(anterior.total) === centavos(opcao.pedido.total);
     if (atual && mesmo && (atual.situacao === "aguardando" || atual.situacao === "recusado") && atual.link) {
-      return { ok: true, link: atual.link, valor: opcao.valor, quantidade: opcao.quantidade, desconto_percentual: opcao.desconto_percentual, forma: opts.forma, reutilizado: true };
+      return { ok: true, link: atual.link, valor: opcao.valor, quantidade: opcao.quantidade, desconto_percentual: opcao.desconto_percentual, forma: opts.forma, reutilizado: true, reativacao };
     }
     if (atual && (atual.situacao === "aguardando" || atual.situacao === "recusado")) {
       const idadeMin = (Date.now() - new Date(anterior.criado_em).getTime()) / 60_000;
@@ -447,7 +504,7 @@ export async function linkDeCobranca(
     const pedido: PedidoConversa = { id: criado.id, forma: opts.forma, total: criado.total, criado_em: new Date().toISOString() };
     await admin.from("conversations").update({ additional_attributes: { ...attrs, loja_pedido: pedido } }).eq("id", opts.conversationId);
     console.log(`[loja-popmed] pedido=${criado.id} total=${criado.total} forma=${opts.forma}`);
-    return { ok: true, link: criado.link, valor: opcao.valor, quantidade: opcao.quantidade, desconto_percentual: opcao.desconto_percentual, forma: opts.forma, reutilizado: false };
+    return { ok: true, link: criado.link, valor: opcao.valor, quantidade: opcao.quantidade, desconto_percentual: opcao.desconto_percentual, forma: opts.forma, reutilizado: false, reativacao };
   } catch (e) {
     return { ok: false, motivo: "loja_falhou", detalhe: e instanceof Error ? e.message.slice(0, 200) : String(e) };
   }
@@ -459,7 +516,8 @@ export function textoDoLink(r: Extract<LinkCobranca, { ok: true }>): string {
   const pix = r.forma === "pix_automatico"
     ? "\n\nNo Pix Automático, o mesmo Pix paga esta cobrança e autoriza as próximas mensalidades (R$ 49,90) no seu banco. Se o banco perguntar um valor máximo, não coloque menos de R$ 49,90."
     : "";
-  return `Segue o link para pagar ${brl(r.valor)} ${como}:\n${r.link}${pix}\n\nDepois de pagar, me envie o comprovante por aqui, por favor.`;
+  const oque = r.reativacao ? `reativar seu plano por ${brl(r.valor)}` : `pagar ${brl(r.valor)}`;
+  return `Segue o link para ${oque} ${como}:\n${r.link}${pix}\n\nDepois de pagar, me envie o comprovante por aqui, por favor.`;
 }
 
 // ---------- helpers ----------

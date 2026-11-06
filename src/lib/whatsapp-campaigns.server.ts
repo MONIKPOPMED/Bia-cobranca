@@ -1,6 +1,8 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json } from "@/integrations/supabase/types";
-import { ConsultaError, consultarCpf, lojaAtiva, opcaoPrincipal } from "./popmed-consulta.server";
+import { ConsultaError, consultarCpf, emBlackFriday, lojaAtiva, opcaoPrincipal, podeReativar, valorReativacao } from "./popmed-consulta.server";
+
+type Valores = { n: number; total: number; pct: number; final: number; reativacao?: boolean };
 
 type AdminClient = SupabaseClient<Database>;
 type ClaimedRecipient = Database["public"]["Tables"]["whatsapp_campaign_recipients"]["Row"];
@@ -156,7 +158,7 @@ async function dispatchOne(admin: AdminClient, lovableApiKey: string, row: Claim
   const debt = asObject(row.debt_data);
   // Store integration on: ask POPMED's system right before the message
   // (guide 4.2, 21/10) — never charge from the stale Carteira.
-  let valores: { n: number; total: number; pct: number; final: number } | undefined;
+  let valores: Valores | undefined;
   if (lojaAtiva()) {
     const r = await checarAntesDeCobrar(admin, row.contact_id);
     if (r.pular) {
@@ -208,12 +210,22 @@ function firstMessage(
   companyName: string | null,
   debt: Record<string, unknown>,
   /** From the CPF lookup (LOJA_POPMED_ATIVA); otherwise the Carteira + POPMED rule. */
-  valores?: { n: number; total: number; pct: number; final: number },
+  valores?: Valores,
 ) {
   const brl = (v: number) => new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(v);
   const first = String(debt.debtor_name ?? "").trim().split(/\s+/)[0] ?? "";
   const name = first ? `, ${first.charAt(0).toUpperCase()}${first.slice(1).toLowerCase()}` : "";
   const company = companyName || "POPMED";
+  if (valores?.reativacao) {
+    // Canceled for non-payment: reactivation as a new sale (06/11).
+    const oferta = emBlackFriday()
+      ? `Estamos com uma condição especial de Black Friday: para voltar, o primeiro mês sai por ${brl(valores.final)} (o plano normal é R$ 49,90), só até 30 de novembro.`
+      : `Para voltar, o plano fica ${brl(valores.final)} por mês.`;
+    return `${greeting()}${name}. Sou a Bia, da ${company}, tudo bem? ` +
+      "Seu plano com Clínico Geral 24 horas foi cancelado por falta de pagamento. " +
+      `Você pode reativar e voltar a ter consultas ilimitadas, todos os dias, sem sair de casa. ${oferta} ` +
+      "Você prefere pagar com cartão de crédito ou PIX?";
+  }
   const n = valores?.n ?? Math.max(1, Number(debt.debt_count ?? 1));
   const total = valores?.total ?? Number(debt.total_open ?? 0);
   const pct = valores?.pct ?? (n >= 3 ? 10 : 0);
@@ -234,7 +246,7 @@ function firstMessage(
  * Skip whoever is no longer overdue, or whose recent store order (15 days)
  * may already be paid; lookup errors pause/retry instead of charging blind.
  */
-async function checarAntesDeCobrar(admin: AdminClient, contactId: string): Promise<{ pular?: string; valores?: { n: number; total: number; pct: number; final: number } }> {
+async function checarAntesDeCobrar(admin: AdminClient, contactId: string): Promise<{ pular?: string; valores?: Valores }> {
   const { data: perfil } = await admin.from("debtor_profiles").select("doc_number").eq("contact_id", contactId).limit(1).maybeSingle();
   const cpf = String(perfil?.doc_number ?? "").replace(/\D/g, "");
   if (cpf.length !== 11) return { pular: "consulta: CPF não cadastrado" };
@@ -253,6 +265,7 @@ async function checarAntesDeCobrar(admin: AdminClient, contactId: string): Promi
     const status = error instanceof ConsultaError ? error.status : 503;
     throw new ProviderError(status === 401 || status === 404 ? 403 : 503, error instanceof Error ? error.message : "Consulta indisponível");
   }
+  if (podeReativar(c)) return { valores: { n: 0, total: valorReativacao(), pct: 0, final: valorReativacao(), reativacao: true } };
   if (c.situacao !== "inadimplente") return { pular: `consulta: ${c.situacao}` };
   const o = opcaoPrincipal(c);
   if (c.sem_opcao || !o) return { pular: `consulta: sem opção (${c.sem_opcao ?? "acima do limite"})` };

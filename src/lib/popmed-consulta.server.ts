@@ -50,6 +50,21 @@ export async function consultarCpf(cpf: string): Promise<Consulta> {
   return JSON.parse(texto) as Consulta;
 }
 
+/**
+ * Canceled (or new) customer: plan reactivation as a new sale — same rule as
+ * supabase/functions/_shared/loja-popmed.ts (POPMED, 06/11): R$ 49,90, or
+ * R$ 34,90 in the November 2026 Black Friday (until 30/11).
+ */
+export function emBlackFriday(agora = new Date()): boolean {
+  return agora < new Date("2026-12-01T00:00:00-03:00");
+}
+export function valorReativacao(agora = new Date()): number {
+  return emBlackFriday(agora) ? 34.9 : 49.9;
+}
+export function podeReativar(c: Consulta): boolean {
+  return !!c.pode_vender_plano_novo && (c.situacao === "cancelado" || c.situacao === "novo");
+}
+
 /** The option the Bia offers: the overdue ones, within the R$ 999 cap (guide 3.4/4.2). */
 export function opcaoPrincipal(c: Consulta): OpcaoConsulta | null {
   const o = (c.opcoes ?? [])[0];

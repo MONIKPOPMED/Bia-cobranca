@@ -8,7 +8,7 @@
 import { phoneVariants } from "../phone.ts";
 import { discountPctFor } from "../payment-links.ts";
 import { spokenAreaAndEnding, spokenPhone, supportDigits } from "../handoff.ts";
-import { consultarCliente, cpfDoContato, lojaAtiva, opcaoPrincipal } from "../loja-popmed.ts";
+import { consultarCliente, cpfDoContato, emBlackFriday, lojaAtiva, opcaoPrincipal, podeReativar, valorReativacaoCentavos } from "../loja-popmed.ts";
 
 export const DEFAULT_DYNAMIC_VARIABLES: Record<string, string> = {
   company_name: "nossa empresa",
@@ -132,6 +132,23 @@ async function consultaVariables(
     c = await consultarCliente(cpf);
   } catch {
     return { regra_pagamento: "Não foi possível confirmar a pendência no sistema. Não informe valores: passe o caso para alguém da nossa equipe." };
+  }
+  if (podeReativar(c)) {
+    const valor = brl(valorReativacaoCentavos() / 100);
+    return {
+      valor_formatado: valor,
+      valor_a_pagar_formatado: valor,
+      desconto_pct: "0",
+      parcelas_em_atraso: "0",
+      max_parcelas: "1",
+      regra_pagamento: (c.situacao === "cancelado"
+        ? "O plano do cliente foi CANCELADO por falta de pagamento. Não cobre mensalidades atrasadas: ofereça a REATIVAÇÃO do plano. "
+        : "O cliente ainda não tem plano: ofereça o plano. ") +
+        (emBlackFriday()
+          ? `Primeiro mês por ${valor}, preço especial de Black Friday só até 30 de novembro (o normal é R$ 49,90); use isso como argumento. Os meses seguintes são R$ 49,90. `
+          : `Primeiro mês por ${valor}; os meses seguintes também são R$ 49,90. Não fale em desconto. `) +
+        "À vista, no cartão ou Pix Automático. Não existe parcelamento.",
+    };
   }
   if (c.situacao !== "inadimplente") {
     return { regra_pagamento: "O sistema mostra que o cliente NÃO tem mensalidade em aberto agora. Não cobre: agradeça, pergunte se pode ajudar em algo e encerre." };
