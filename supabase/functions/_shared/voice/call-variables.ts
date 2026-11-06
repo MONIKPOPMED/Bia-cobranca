@@ -168,9 +168,8 @@ async function consultaVariables(
     regra_pagamento: (o.desconto_percentual > 0
       ? `O cliente tem ${parcelas} em atraso, total de ${brl(o.valor_sem_desconto)}. À vista, no cartão ou Pix Automático, tem ${o.desconto_percentual}% de desconto: paga ${brl(o.valor)}. Pode mencionar esse desconto. Não existe parcelamento.`
       : `O cliente tem ${parcelas} em atraso. O valor a pagar é ${brl(o.valor)}, à vista, no cartão ou Pix Automático. NÃO existe desconto neste caso — não fale em desconto de forma alguma; diga só o valor. Não existe parcelamento.`) +
-      (emBlackFriday()
-        ? " Se o cliente perguntar das próximas mensalidades: o plano aumentou para R$ 49,90, mas em novembro estamos em Black Friday e a mensalidade sai por R$ 34,90; a partir de dezembro, R$ 49,90."
-        : ""),
+      // POPMED (06/11): Black Friday only for reactivation, never for debtors.
+      ` Não fale de Black Friday, promoção nem aumento de preço; as próximas mensalidades seguem em ${brl(Math.round((o.valor_sem_desconto / Math.max(1, n)) * 100) / 100)}.`,
   };
 }
 

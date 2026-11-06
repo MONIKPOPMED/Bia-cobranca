@@ -220,7 +220,11 @@ async function sendStoreLink(
   const firstName = (contact.name ?? "").trim().split(/\s+/)[0];
   const hello = firstName ? `Oi, ${firstName.charAt(0).toUpperCase()}${firstName.slice(1).toLowerCase()}!` : "Oi!";
   const { data: settings } = await admin.from("company_settings").select("company_name").eq("account_id", call.account_id).maybeSingle();
-  const text = `${hello} Aqui é a Bia, da ${settings?.company_name ?? "POPMED"}. Como combinamos na ligação: ${textoDoLink(r)}`;
+  const text = [
+    `${hello} Aqui é a Bia, da ${settings?.company_name ?? "POPMED"}.`,
+    "Como combinamos na ligação:",
+    textoDoLink(r),
+  ].join("\n");
   try {
     const sent = await sendText({ ...sender, number: contact.phone_number ?? customerPhone, text });
     await recordOutcome({ sent: true, message_id: sent.messageId ?? null, valor: r.valor, quantidade: r.quantidade });

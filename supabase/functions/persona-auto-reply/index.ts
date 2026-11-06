@@ -8,7 +8,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.74.0";
 import { sendText } from "../_shared/evolution/index.ts";
 import { formatBrPhone, HANDOFF_MARKER, HANDOFF_RULE_WHATSAPP } from "../_shared/handoff.ts";
-import { consultarCliente, contextoDaConsulta, cpfDoContato, type Forma, linkDeCobranca, lojaAtiva, notaPixAutomatico } from "../_shared/loja-popmed.ts";
+import { consultarCliente, contextoDaConsulta, cpfDoContato, type Forma, linkDeCobranca, lojaAtiva, textoDoLinkWhatsApp } from "../_shared/loja-popmed.ts";
 import { type EvolutionSender, loadTeamWhatsApp, notifyTeam } from "../_shared/team-handoff.ts";
 
 const corsHeaders = {
@@ -422,7 +422,6 @@ const LINK_MARKERS: Array<{ re: RegExp; forma: Forma }> = [
   { re: /https?:\/\/(?:www\.)?popmed\.com\.br\/produto\/popmed-plano-mensal-ia2-pix\/?/g, forma: "pix_automatico" },
 ];
 
-const pixNote = () => notaPixAutomatico();
 
 /**
  * Replaces the link marker with this customer's store order link. When no
@@ -442,21 +441,11 @@ async function applyPaymentLink(
     ? await linkDeCobranca(admin, { contactId: conv.contact_id, conversationId, forma: marker.forma })
     : { ok: false as const, motivo: "sem_cpf" as const };
   if (r.ok) {
-    // Clean the text BEFORE putting the link in: the "Adquirir agora" cleanup
-    // stops at dots, and the link has dots — run after, it cut the link to
-    // "https://popmed.com." (06/11, 3 customers).
-    const TOKEN = "\u0000LINK\u0000";
-    let out = reply;
-    for (const m of LINK_MARKERS) out = out.replace(m.re, TOKEN);
-    // Any other URL the model wrote (old product pages, popmed.com.br…) must not go out.
-    out = out.replace(/https?:\/\/\S+/g, "");
-    // The old script talks about "Adquirir agora": that button only exists on the product page.
-    out = out.replace(/[^.\n\u0000]*Adquirir agora[^.\n\u0000]*\.?/gi, "");
-    out = out.includes(TOKEN) ? out.split(TOKEN).join(r.link) : `${out.trim()}\n${r.link}`;
-    out = out.replace(/[ \t]+\n/g, "\n").trim();
-    if (r.forma === "pix_automatico" && !/autoriza/i.test(out)) out = `${out}\n\n${pixNote()}`;
-    if (!/comprovante/i.test(out)) out = `${out}\n\nDepois de pagar, me envie o comprovante por aqui, por favor.`;
-    return { reply: out, handoff: false };
+    // Fixed text written by POPMED (06/11) whenever the link goes out — the
+    // model's own text around the link is dropped (it also cut the link to
+    // "https://popmed.com." with the old "Adquirir agora" cleanup).
+    const { data: contact } = await admin.from("contacts").select("name").eq("id", conv!.contact_id).maybeSingle();
+    return { reply: textoDoLinkWhatsApp(r, contact?.name ?? null), handoff: false };
   }
   console.warn(`[persona-auto-reply] no store link: ${r.motivo}`);
   if (r.motivo === "ja_pago") {

@@ -221,10 +221,13 @@ function firstMessage(
     const oferta = emBlackFriday()
       ? `Estamos com uma condição especial de Black Friday: para voltar, o primeiro mês sai por ${brl(valores.final)} (o plano normal é R$ 49,90), só até 30 de novembro.`
       : `Para voltar, o plano fica ${brl(valores.final)} por mês.`;
-    return `${greeting()}${name}. Sou a Bia, da ${company}, tudo bem? ` +
-      "Seu plano com Clínico Geral 24 horas foi cancelado por falta de pagamento. " +
-      `Você pode reativar e voltar a ter consultas ilimitadas, todos os dias, sem sair de casa. ${oferta} ` +
-      "Você prefere pagar com cartão de crédito ou PIX?";
+    return [
+      `${greeting()}${name}.`,
+      `Sou a Bia, da ${company}, tudo bem?`,
+      "Seu plano com Clínico Geral 24 horas foi cancelado por falta de pagamento.",
+      "Você pode reativar e voltar a ter consultas ilimitadas, todos os dias, sem sair de casa.",
+      `${oferta} Você prefere pagar com cartão de crédito ou PIX?`,
+    ].join("\n");
   }
   const n = valores?.n ?? Math.max(1, Number(debt.debt_count ?? 1));
   const total = valores?.total ?? Number(debt.total_open ?? 0);
@@ -236,9 +239,13 @@ function firstMessage(
   const discount = pct > 0
     ? ` Pagando à vista, você tem ${pct}% de desconto e fica ${brl(final)}.`
     : "";
-  return `${greeting()}${name}. Sou a Bia, da ${company}, tudo bem? ` +
-    "Vim te lembrar que você conta com Clínico Geral 24 horas, todos os dias, com consultas ilimitadas e atendimento sem sair de casa. " +
-    `${owed}${discount} Você prefere pagar com cartão de crédito ou PIX?`;
+  // One sentence per line, as written by POPMED (06/11).
+  return [
+    `${greeting()}${name}.`,
+    `Sou a Bia, da ${company}, tudo bem?`,
+    "Vim te lembrar que você conta com Clínico Geral 24 horas, todos os dias, com consultas ilimitadas e atendimento sem sair de casa.",
+    `${owed}${discount} Você prefere pagar com cartão de crédito ou PIX?`,
+  ].join("\n");
 }
 
 /**
