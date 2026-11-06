@@ -143,8 +143,13 @@ Deno.serve(async (req) => {
   }
 
   // 6) Identify the sender + instance.
-  const remoteJid: string =
-    data?.key?.remoteJid ?? data?.remoteJid ?? "";
+  // WhatsApp privacy ids ("…@lid"): Evolution also sends the phone JID in
+  // remoteJidAlt / senderPn. Use the phone, or the customer lands in a new
+  // "WhatsApp (sem número)" contact instead of the collection thread (06/11).
+  const rawJid: string = data?.key?.remoteJid ?? data?.remoteJid ?? "";
+  const altJid = [data?.key?.remoteJidAlt, data?.key?.senderPn, data?.senderPn, data?.remoteJidAlt]
+    .find((j) => typeof j === "string" && /@s\.whatsapp\.net$/.test(j)) as string | undefined;
+  const remoteJid: string = rawJid.endsWith("@lid") && altJid ? altJid : rawJid;
   if (!remoteJid) return ok({ ignored: "no_remoteJid" });
 
   // Group messages: skip for now (would need group routing).
@@ -227,6 +232,18 @@ async function handleMessage(
       .single();
     inbox = created!;
   }
+
+  // Same message already saved (Evolution resends it, sometimes once with the
+  // phone and once with the "@lid" id): stop BEFORE creating a contact or a
+  // conversation — that is what left empty "WhatsApp (sem número)" chats.
+  const { data: jaSalva } = await admin
+    .from("messages")
+    .select("id")
+    .eq("account_id", accountId)
+    .eq("source_id", messageId)
+    .limit(1)
+    .maybeSingle();
+  if (jaSalva) return;
 
   // Normalize remoteJid → identifier. Strip lid suffix (`:46`) and domain.
   const baseJid = remoteJid.replace(/:\d+@/, "@").split("@")[0];
