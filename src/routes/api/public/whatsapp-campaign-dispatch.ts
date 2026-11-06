@@ -26,8 +26,17 @@ export const Route = createFileRoute("/api/public/whatsapp-campaign-dispatch")({
           console.error("[planilha-cobranca]", error);
           planilha = { ok: false, erro: error instanceof Error ? error.message : String(error) };
         }
+        // Contato/Retorno columns back to the sheet + 2nd-contact calls (every tick, 8h–20h).
+        let planilhaEscrita: unknown;
         try {
-          return Response.json({ ok: true, ...(await dispatchCampaignBatch(supabaseAdmin, lovableApiKey)), ...(planilha ? { planilha } : {}) });
+          const { atualizarPlanilha, horaDeEscreverPlanilha } = await import("@/lib/planilha-cobranca.server");
+          if (horaDeEscreverPlanilha()) planilhaEscrita = await atualizarPlanilha(supabaseAdmin);
+        } catch (error) {
+          console.error("[planilha-escrita]", error);
+          planilhaEscrita = { ok: false, erro: error instanceof Error ? error.message : String(error) };
+        }
+        try {
+          return Response.json({ ok: true, ...(await dispatchCampaignBatch(supabaseAdmin, lovableApiKey)), ...(planilha ? { planilha } : {}), ...(planilhaEscrita ? { planilhaEscrita } : {}) });
         } catch (error) {
           console.error("[whatsapp-campaign-dispatch]", error);
           return Response.json({ error: error instanceof Error ? error.message : "Falha ao processar campanhas" }, { status: 500 });

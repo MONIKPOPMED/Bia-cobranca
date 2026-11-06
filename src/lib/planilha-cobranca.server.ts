@@ -195,7 +195,7 @@ export async function sincronizarPlanilha(admin: AdminClient, agora = new Date()
         campaign_id: campanhaId, account_id: accountId, contact_id: contato.id,
         phone_number: String(contato.phone_number ?? fone).replace(/\D/g, ""),
         debt_ids: dividaId ? [dividaId] : [],
-        debt_data: { debtor_name: contato.name || c.nome, total_open: c.valor, nearest_due_date: c.cancelamento, descriptions: [c.situacao], debt_count: 1 } as Json,
+        debt_data: { debtor_name: contato.name || c.nome, total_open: c.valor, nearest_due_date: c.cancelamento, descriptions: [c.situacao], debt_count: 1, planilha: { aba, cd: c.cd, cpf: c.cpf } } as Json,
         dispatch_after: agora.toISOString(),
       });
       if (error) problemas.push(`${c.nome}: ${error.message}`); else novos++;
@@ -222,4 +222,227 @@ export async function sincronizarPlanilha(admin: AdminClient, agora = new Date()
 function saoPauloDia(iso: string) {
   const t = saoPaulo(new Date(iso));
   return `${t.year}-${String(t.month).padStart(2, "0")}-${String(t.day).padStart(2, "0")}`;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Writing back to the sheet (asked 06/11): Contato/Retorno columns.
+//
+// Through the Apps Script web app installed in the sheet
+// (docs/planilha-apps-script.gs; secrets PLANILHA_ESCRITA_URL and
+// PLANILHA_ESCRITA_SEGREDO). The script puts the Bia's contact in the first
+// empty slot (#1, #2, #3: never over the team's) and only accepts the
+// dropdown values.
+//
+// 1st contact = the campaign WhatsApp: "Contato por Whatsapp" + "Sem retorno";
+// then the return follows the conversation: replied → "Negociando"; store
+// link → "Link de pagamento - Cartão/Pix"; order paid → "Pagou por …";
+// customer asked to cancel → "Cancelou". Never goes back (paid stays paid).
+// 2nd contact = a call when there's no reply in 2 business days (month's call
+// campaign "Planilha <Mês>/<ano> – ligações (automática)"): "Contato por
+// telefone"; answered → "Negociando", else "Sem retorno"; from then on the
+// updates go to the call's slot.
+//
+// What was written is kept in whatsapp_campaign_recipients.debt_data.planilha
+// so each tick only sends the changes (at most ESCRITAS_POR_RODADA).
+// ───────────────────────────────────────────────────────────────────────────
+
+const ESCRITAS_POR_RODADA = 10;
+const RETORNO_ORDEM: Record<string, number> = {
+  "Sem retorno": 0, "Negociando": 1, "Link de pagamento - Cartão": 2, "Link de pagamento - Pix": 2,
+  "Cancelou": 3, "Pagou por cartão": 4, "Pagou por pix": 4,
+};
+
+type Espaco = { espaco?: number; retorno?: string };
+type EstadoPlanilha = { aba?: string; cd?: string; cpf?: string; w?: Espaco; t?: Espaco & { call_id?: string } };
+
+function escritaConfigurada() {
+  return !!process.env["PLANILHA_ESCRITA_URL"]?.trim() && !!process.env["PLANILHA_ESCRITA_SEGREDO"]?.trim();
+}
+
+async function escrever(corpo: Record<string, unknown>): Promise<{ ok: boolean; espaco?: number; erro?: string }> {
+  const resp = await fetch(process.env["PLANILHA_ESCRITA_URL"]!.trim(), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...corpo, segredo: process.env["PLANILHA_ESCRITA_SEGREDO"]!.trim() }),
+    redirect: "follow",
+    signal: AbortSignal.timeout(30_000),
+  });
+  const texto = await resp.text();
+  try { return JSON.parse(texto); } catch { return { ok: false, erro: `HTTP ${resp.status}` }; }
+}
+
+async function statusDoPedido(id: number): Promise<string | null> {
+  const k = process.env["WOO_CONSUMER_KEY"], s = process.env["WOO_CONSUMER_SECRET"];
+  if (!k || !s) return null;
+  try {
+    const r = await fetch(`https://popmed.com.br/wp-json/wc/v3/orders/${id}`, {
+      headers: { Authorization: "Basic " + btoa(`${k}:${s}`), Accept: "application/json" },
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!r.ok) return null;
+    return String(((await r.json()) as { status?: string }).status ?? "");
+  } catch { return null; }
+}
+
+const pagou = (status: string | null) => status === "processing" || status === "completed";
+
+/** Business days (Mon–Fri) fully passed since `desde`, in São Paulo. */
+function diasUteisDesde(desde: Date, agora: Date) {
+  let n = 0;
+  const d = new Date(desde);
+  for (let i = 0; i < 15; i++) {
+    d.setTime(d.getTime() + 86_400_000);
+    if (d > agora) break;
+    if (!["Sat", "Sun"].includes(saoPaulo(d).weekday)) n++;
+  }
+  return n;
+}
+
+/** Sheet updates run on every campaign tick, 8h–20h (payments and replies also come in the evening). */
+export function horaDeEscreverPlanilha(d = new Date()) {
+  const t = saoPaulo(d);
+  return t.hour >= 8 && t.hour < 20;
+}
+
+const asObj = (v: unknown) => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
+
+export async function atualizarPlanilha(admin: AdminClient, agora = new Date()) {
+  if (!escritaConfigurada()) return { ok: false, motivo: "PLANILHA_ESCRITA_URL/SEGREDO não configurados" };
+  const t = saoPaulo(agora);
+  const { data: campanhas } = await admin.from("whatsapp_campaigns").select("id, account_id, name, status")
+    .like("name", "Planilha %(automática)").neq("status", "canceled")
+    .gte("created_at", new Date(agora.getTime() - 45 * 86_400_000).toISOString());
+
+  let escritas = 0, ligacoesAgendadas = 0;
+  const erros: string[] = [];
+
+  for (const camp of campanhas ?? []) {
+    const aba = camp.name.match(/^Planilha (\S+)\//)?.[1];
+    if (!aba) continue;
+    const doMesAtual = camp.name === nomeDaCampanha(t);
+    const { data: rows } = await admin.from("whatsapp_campaign_recipients")
+      .select("id, contact_id, status, sent_at, conversation_id, debt_data, phone_number")
+      .eq("campaign_id", camp.id).in("status", ["sent", "replied"]);
+    const callCamp = doMesAtual ? await campanhaDeLigacoes(admin, camp.account_id, aba, t.year) : null;
+
+    for (const r of rows ?? []) {
+      if (escritas >= ESCRITAS_POR_RODADA) break;
+      const dd = asObj(r.debt_data);
+      const est: EstadoPlanilha = { ...(asObj(dd.planilha) as EstadoPlanilha) };
+      est.aba ??= aba;
+      if (!est.cd && !est.cpf) {
+        const { data: p } = await admin.from("debtor_profiles").select("doc_number, external_ref").eq("contact_id", r.contact_id).limit(1).maybeSingle();
+        est.cd = p?.external_ref ?? undefined;
+        est.cpf = p?.doc_number ?? undefined;
+      }
+      const salvar = async () => {
+        await admin.from("whatsapp_campaign_recipients").update({ debt_data: { ...dd, planilha: est } as Json }).eq("id", r.id);
+      };
+      const alvo = { aba: est.aba, cd: est.cd ?? "", cpf: est.cpf ?? "" };
+
+      // 1st contact: the WhatsApp message.
+      if (!est.w?.espaco) {
+        const res = await escrever({ acao: "contato", contato: "Contato por Whatsapp", ...alvo });
+        escritas++;
+        if (!res.ok) { erros.push(`${r.id}: ${res.erro}`); if (res.erro === "cliente" || res.erro === "sem_espaco") { est.w = { espaco: -1 }; await salvar(); } continue; }
+        est.w = { espaco: res.espaco, retorno: "Sem retorno" };
+        await salvar();
+      }
+      if ((est.w?.espaco ?? 0) < 1) continue;
+
+      // Where the conversation is now.
+      const { data: conv } = r.conversation_id
+        ? await admin.from("conversations").select("additional_attributes").eq("id", r.conversation_id).maybeSingle()
+        : { data: null };
+      const pedido = asObj(asObj(conv?.additional_attributes).loja_pedido);
+      let desejado = r.status === "replied" ? "Negociando" : "Sem retorno";
+      if (pedido.id) {
+        const st = await statusDoPedido(Number(pedido.id));
+        desejado = pagou(st)
+          ? (pedido.forma === "cartao" ? "Pagou por cartão" : "Pagou por pix")
+          : (pedido.forma === "cartao" ? "Link de pagamento - Cartão" : "Link de pagamento - Pix");
+      }
+      if (!desejado.startsWith("Pagou") && r.conversation_id && r.sent_at) {
+        const { count } = await admin.from("messages").select("id", { count: "exact", head: true })
+          .eq("conversation_id", r.conversation_id).eq("sender_type", "Contact").gte("created_at", r.sent_at)
+          .or("content.ilike.%cancelar%,content.ilike.%cancelamento%");
+        if ((count ?? 0) > 0) desejado = "Cancelou";
+      }
+
+      // 2nd contact: the call, if any.
+      const ligacao = callCamp ? await resultadoDaLigacao(admin, callCamp, r.contact_id) : null;
+      if (ligacao?.terminou && !est.t?.espaco) {
+        const res = await escrever({ acao: "contato", contato: "Contato por telefone", ...alvo });
+        escritas++;
+        if (res.ok) { est.t = { espaco: res.espaco, retorno: "Sem retorno", call_id: ligacao.callId }; await salvar(); }
+        else erros.push(`${r.id}: ${res.erro}`);
+      }
+      const slot = (est.t?.espaco ?? 0) > 0 ? "t" : "w";
+      if (slot === "t" && ligacao?.atendeu && RETORNO_ORDEM[desejado] < 1) desejado = "Negociando";
+      const atual = est[slot]?.retorno ?? "Sem retorno";
+      if (desejado !== atual && RETORNO_ORDEM[desejado] >= RETORNO_ORDEM[atual] && escritas < ESCRITAS_POR_RODADA) {
+        const res = await escrever({ acao: "retorno", espaco: est[slot]!.espaco, retorno: desejado, ...alvo });
+        escritas++;
+        if (res.ok) { est[slot] = { ...est[slot], retorno: desejado }; await salvar(); }
+        else erros.push(`${r.id}: ${res.erro}`);
+      }
+
+      // Schedule the call: no reply after 2 business days, no link, current month.
+      if (callCamp && r.status === "sent" && !pedido.id && !ligacao && r.sent_at && diasUteisDesde(new Date(r.sent_at), agora) >= 2) {
+        const { error } = await admin.from("voice_campaign_contacts").upsert({
+          campaign_id: callCamp, account_id: camp.account_id, contact_id: r.contact_id,
+          phone_number: r.phone_number.startsWith("+") ? r.phone_number : `+${r.phone_number}`,
+          to_number: r.phone_number.startsWith("+") ? r.phone_number : `+${r.phone_number}`,
+          variables: {} as Json, status: "queued", dispatch_after: agora.toISOString(),
+        }, { onConflict: "campaign_id,contact_id", ignoreDuplicates: true });
+        if (!error) {
+          ligacoesAgendadas++;
+          await admin.from("voice_campaigns").update({ status: "running", finished_at: null }).eq("id", callCamp).in("status", ["running", "completed"]);
+        }
+      }
+    }
+  }
+  if (ligacoesAgendadas) {
+    // Keep the Campanhas screen's counters in step.
+    const { data: calls } = await admin.from("voice_campaigns").select("id").like("name", "Planilha %ligações (automática)").gte("created_at", new Date(agora.getTime() - 45 * 86_400_000).toISOString());
+    for (const c of calls ?? []) {
+      const { count } = await admin.from("voice_campaign_contacts").select("id", { count: "exact", head: true }).eq("campaign_id", c.id);
+      await admin.from("voice_campaigns").update({ contact_count: count ?? 0, total_contacts: count ?? 0 }).eq("id", c.id);
+    }
+  }
+  return { ok: true, escritas, ligacoesAgendadas, erros: erros.slice(0, 10) };
+}
+
+/** Month's call campaign for the 2nd contact; created from the last real collection call campaign. */
+async function campanhaDeLigacoes(admin: AdminClient, accountId: string, aba: string, ano: number): Promise<string | null> {
+  const nome = `Planilha ${aba}/${ano} – ligações (automática)`;
+  const { data: existente } = await admin.from("voice_campaigns").select("id, status").eq("account_id", accountId).eq("name", nome).limit(1).maybeSingle();
+  if (existente) return existente.status === "canceled" ? null : existente.id;
+  const { data: modelo } = await admin.from("voice_campaigns").select("*").eq("account_id", accountId)
+    .eq("campaign_kind", "collection").eq("test_mode", false).eq("script_mode", "conversational")
+    .order("created_at", { ascending: false }).limit(1).maybeSingle();
+  if (!modelo) return null;
+  const { data: nova } = await admin.from("voice_campaigns").insert({
+    account_id: accountId, name: nome, description: "2º contato: quem não respondeu o WhatsApp da campanha da planilha em 2 dias úteis.",
+    persona_id: modelo.persona_id, voice_id: modelo.voice_id, language_code: modelo.language_code,
+    script_mode: modelo.script_mode, mode: modelo.mode, opening_script: modelo.opening_script, system_prompt: modelo.system_prompt,
+    phone_number_id: modelo.phone_number_id, from_number: modelo.from_number,
+    escalation_rules: modelo.escalation_rules, escalation_keywords: modelo.escalation_keywords,
+    max_call_duration_sec: modelo.max_call_duration_sec, voicemail_detection: modelo.voicemail_detection,
+    record_call: modelo.record_call, retry_attempts: modelo.retry_attempts, retry_delay_minutes: modelo.retry_delay_minutes,
+    collection_config: modelo.collection_config, campaign_kind: "collection", test_mode: false,
+    status: "running", started_at: new Date().toISOString(), contact_count: 0, total_contacts: 0,
+  }).select("id").single();
+  return nova?.id ?? null;
+}
+
+/** The 2nd-contact call of a customer: finished? answered? */
+async function resultadoDaLigacao(admin: AdminClient, campanhaId: string, contactId: string) {
+  const { data: cc } = await admin.from("voice_campaign_contacts").select("status, voice_call_id").eq("campaign_id", campanhaId).eq("contact_id", contactId).limit(1).maybeSingle();
+  if (!cc) return null;
+  const terminal = ["completed", "failed", "canceled", "skipped", "no_answer", "busy", "voicemail"];
+  if (!cc.voice_call_id) return { terminou: terminal.includes(cc.status) && cc.status !== "skipped", atendeu: false, callId: undefined as string | undefined };
+  const { data: vc } = await admin.from("voice_calls").select("id, status, duration_seconds").eq("id", cc.voice_call_id).maybeSingle();
+  const fim = ["completed", "failed", "no_answer", "busy", "canceled", "voicemail"].includes(String(vc?.status));
+  return { terminou: fim, atendeu: vc?.status === "completed" && Number(vc?.duration_seconds ?? 0) >= 20, callId: vc?.id };
 }
