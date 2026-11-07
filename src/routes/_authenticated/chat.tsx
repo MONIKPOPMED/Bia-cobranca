@@ -116,7 +116,7 @@ function LiveChatPage() {
         .eq("account_id", accountId)
         .in("inbox_id", inboxIds)
         .order("last_activity_at", { ascending: false })
-        .limit(80);
+        .limit(300);
       const rows = (convs ?? []) as ConversationRow[];
 
       const contactIds = Array.from(new Set(rows.map((r) => r.contact_id).filter(Boolean)));
@@ -274,8 +274,17 @@ function LiveChatPage() {
   const filteredConversations = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return conversations;
+    // Phone search by digits only: "(21) 98305-9781" must find +5521983059781,
+    // also when one side has no country code or no 9th digit (07/11).
+    const soDigitos = (s: string) => s.replace(/\D/g, "");
+    const semPais = (d: string) => (d.length >= 12 && d.startsWith("55") ? d.slice(2) : d);
+    const sem9 = (d: string) => (d.length === 11 && d[2] === "9" ? d.slice(0, 2) + d.slice(3) : d);
+    const qd = semPais(soDigitos(q));
     return conversations.filter((c) => {
+      const pd = semPais(soDigitos(c.contact_phone ?? ""));
+      const porTelefone = qd.length >= 4 && pd.length > 0 && (pd.includes(qd) || sem9(pd).includes(sem9(qd)));
       return (
+        porTelefone ||
         (c.contact_name ?? "").toLowerCase().includes(q) ||
         (c.contact_phone ?? "").toLowerCase().includes(q) ||
         (c.last_message ?? "").toLowerCase().includes(q)
