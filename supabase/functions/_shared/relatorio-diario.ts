@@ -6,6 +6,9 @@
 // Recipients: accounts.internal_attributes.relatorio_diario.emails, else
 // DESTINATARIOS.
 
+import { sendText } from "./evolution/index.ts";
+import { loadWhatsAppSender } from "./team-handoff.ts";
+
 const DESTINATARIOS = ["monikmendes@popmed.com.br", "emerson@bbmdigital.com.br", "eduardo@bbmdigital.com.br"];
 const HORA = 8;
 
@@ -102,6 +105,57 @@ ${nomes}
 </div>`;
 }
 
+/** WhatsApp version (09/11: the e-mail service key is invalid; POPMED asked for WhatsApp). */
+export function textoDoRelatorio(r: Relatorio): string {
+  const nomes = r.nomesComprovantes.length ? r.nomesComprovantes.map((n) => `• ${n}`).join("\n") : "Nenhum.";
+  return [
+    `📊 *Relatório da Bia — dia ${br(r.dia)}*`,
+    "",
+    `*${r.disparos}* ${r.disparos === 1 ? "disparo" : "disparos"}`,
+    `*${r.links}* ${r.links === 1 ? "cliente recebeu" : "clientes receberam"} link de pagamento da Bia`,
+    `*${r.responderam}* ${r.responderam === 1 ? "cliente respondeu" : "clientes responderam"}`,
+    `*${r.comprovantes}* ${r.comprovantes === 1 ? "cliente enviou" : "clientes enviaram"} comprovante de pagamento e a Bia encaminhou ao grupo do financeiro`,
+    "",
+    "*Nome desses clientes:*",
+    nomes,
+  ].join("\n");
+}
+
+const WHATSAPP_PADRAO = ["5548991667070", "5548991496112", "554891151935"]; // Monik, Emerson, Eduardo
+
+// deno-lint-ignore no-explicit-any
+async function whatsappDestinos(admin: any, accountId: string): Promise<string[]> {
+  const { data } = await admin.from("accounts").select("internal_attributes").eq("id", accountId).maybeSingle();
+  // deno-lint-ignore no-explicit-any
+  const lista = (data?.internal_attributes as any)?.relatorio_diario?.whatsapp;
+  return Array.isArray(lista) && lista.length ? lista.map((n: unknown) => String(n).replace(/\D/g, "")) : WHATSAPP_PADRAO;
+}
+
+/** Sends to each number; a BR mobile saved without the 9th digit is retried with it. */
+// deno-lint-ignore no-explicit-any
+export async function enviarPorWhatsApp(admin: any, accountId: string, texto: string, numeros?: string[]) {
+  const sender = await loadWhatsAppSender(admin, accountId);
+  if (!sender) return { ok: false, erro: "WhatsApp desconectado", enviados: 0 };
+  const destinos = numeros ?? await whatsappDestinos(admin, accountId);
+  let enviados = 0;
+  const erros: string[] = [];
+  for (const n of destinos) {
+    const tentativas = n.length === 12 && n.startsWith("55") ? [n, `${n.slice(0, 4)}9${n.slice(4)}`] : [n];
+    let foi = false;
+    for (const numero of tentativas) {
+      try {
+        await sendText({ ...sender, number: numero, text: texto });
+        foi = true;
+        break;
+      } catch (e) {
+        erros.push(`${numero.slice(-4)}: ${e instanceof Error ? e.message.slice(0, 120) : String(e)}`);
+      }
+    }
+    if (foi) enviados++;
+  }
+  return { ok: enviados > 0, enviados, erro: erros.length ? erros.join(" | ") : undefined };
+}
+
 // deno-lint-ignore no-explicit-any
 async function destinatarios(admin: any, accountId: string): Promise<string[]> {
   const { data } = await admin.from("accounts").select("internal_attributes").eq("id", accountId).maybeSingle();
@@ -123,17 +177,18 @@ export async function talvezEnviarRelatorio(admin: any, accountId: string, envia
     if (ia.relatorio_diario?.ultimo === hoje) return null;
     const ontem = diaSP(new Date(inicioDoDiaSP(hoje).getTime() - 12 * 3600_000));
     const r = await montarRelatorio(admin, accountId, ontem);
+    // WhatsApp is the main channel; the e-mail goes too when the Resend key works.
+    const wa = await enviarPorWhatsApp(admin, accountId, textoDoRelatorio(r));
     const to = await destinatarios(admin, accountId);
     const res = await enviar(to, `Relatório da Bia — ${br(ontem)}`, htmlDoRelatorio(r));
-    if (!res.ok) {
-      console.error(`[relatorio-diario] e-mail falhou: ${res.error}`);
-      return { enviado: false, erro: res.error };
-    }
+    if (!res.ok) console.warn(`[relatorio-diario] e-mail falhou: ${res.error}`);
+    if (wa.erro) console.warn(`[relatorio-diario] WhatsApp: ${wa.erro}`);
+    if (!wa.ok && !res.ok) return { enviado: false, erro: wa.erro ?? res.error };
     await admin.from("accounts").update({
       internal_attributes: { ...ia, relatorio_diario: { ...(ia.relatorio_diario ?? {}), ultimo: hoje } },
     }).eq("id", accountId);
-    console.log(`[relatorio-diario] enviado dia=${ontem} para=${to.length}`);
-    return { enviado: true, dia: ontem };
+    console.log(`[relatorio-diario] enviado dia=${ontem} whatsapp=${wa.enviados} email=${res.ok}`);
+    return { enviado: true, dia: ontem, whatsapp: wa.enviados, email: res.ok };
   } catch (e) {
     console.error("[relatorio-diario] falhou", e);
     return { enviado: false, erro: e instanceof Error ? e.message : String(e) };

@@ -23,7 +23,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.74.0";
 import { checkWhatsAppNumbers, getConnectionState, normalizeStatus } from "../_shared/evolution/index.ts";
 import { LojaPopmed, lojaAtiva } from "../_shared/loja-popmed.ts";
-import { diaSP, htmlDoRelatorio, montarRelatorio, talvezEnviarRelatorio } from "../_shared/relatorio-diario.ts";
+import { diaSP, enviarPorWhatsApp, htmlDoRelatorio, montarRelatorio, talvezEnviarRelatorio, textoDoRelatorio } from "../_shared/relatorio-diario.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -80,7 +80,7 @@ Deno.serve(async (req) => {
   const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
   const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
   const admin = createClient(supabaseUrl, serviceKey);
-  const body = await req.json().catch(() => ({})) as { mode?: string; dia?: string };
+  const body = await req.json().catch(() => ({})) as { mode?: string; dia?: string; whatsapp?: string };
 
   // ── Auth: cron/service, or an admin user for the test e-mail ──
   const authHeader = req.headers.get("Authorization") ?? "";
@@ -103,7 +103,10 @@ Deno.serve(async (req) => {
     const dia = /^\d{4}-\d{2}-\d{2}$/.test(String(body.dia ?? "")) ? String(body.dia) : diaSP(new Date(Date.now() - 24 * 3600_000));
     const r = await montarRelatorio(admin, role.account_id, dia);
     const sent = await sendEmail([u.user.email], `[TESTE] Relatório da Bia — ${dia.split("-").reverse().join("/")}`, htmlDoRelatorio(r));
-    return j({ ok: sent.ok, relatorio: r, error: sent.error });
+    // WhatsApp test goes only to the number given (digits), never to the full list.
+    const numero = String(body.whatsapp ?? "").replace(/\D/g, "");
+    const wa = numero ? await enviarPorWhatsApp(admin, role.account_id, `[TESTE]\n${textoDoRelatorio(r)}`, [numero]) : null;
+    return j({ ok: sent.ok || !!wa?.ok, relatorio: r, email: sent, whatsapp: wa });
   }
 
   if (body.mode === "test") {
