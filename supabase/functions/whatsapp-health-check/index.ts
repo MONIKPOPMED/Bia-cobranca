@@ -23,6 +23,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.74.0";
 import { checkWhatsAppNumbers, getConnectionState, normalizeStatus } from "../_shared/evolution/index.ts";
 import { LojaPopmed, lojaAtiva } from "../_shared/loja-popmed.ts";
+import { diaSP, htmlDoRelatorio, montarRelatorio, talvezEnviarRelatorio } from "../_shared/relatorio-diario.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -79,7 +80,7 @@ Deno.serve(async (req) => {
   const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
   const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
   const admin = createClient(supabaseUrl, serviceKey);
-  const body = await req.json().catch(() => ({})) as { mode?: string };
+  const body = await req.json().catch(() => ({})) as { mode?: string; dia?: string };
 
   // ── Auth: cron/service, or an admin user for the test e-mail ──
   const authHeader = req.headers.get("Authorization") ?? "";
@@ -88,6 +89,22 @@ Deno.serve(async (req) => {
     .filter((s): s is string => !!s && s.length >= 16);
   const isService = !!serviceKey && authHeader.includes(serviceKey);
   const isCron = !!cronHeader && cronSecrets.some((s) => safeEqual(s, cronHeader));
+
+  // Daily report preview (admin): { mode: "relatorio_teste", dia?: "aaaa-mm-dd" }
+  // e-mails only the logged-in admin (default: yesterday).
+  if (body.mode === "relatorio_teste") {
+    const userClient = createClient(supabaseUrl, Deno.env.get("SUPABASE_ANON_KEY")!, {
+      global: { headers: { Authorization: authHeader } },
+    });
+    const { data: u } = await userClient.auth.getUser();
+    if (!u?.user?.id || !u.user.email) return j({ error: "unauthorized" }, 401);
+    const { data: role } = await admin.from("user_roles").select("account_id, role").eq("user_id", u.user.id).eq("role", "admin").limit(1).maybeSingle();
+    if (!role) return j({ error: "admin role required" }, 403);
+    const dia = /^\d{4}-\d{2}-\d{2}$/.test(String(body.dia ?? "")) ? String(body.dia) : diaSP(new Date(Date.now() - 24 * 3600_000));
+    const r = await montarRelatorio(admin, role.account_id, dia);
+    const sent = await sendEmail([u.user.email], `[TESTE] Relatório da Bia — ${dia.split("-").reverse().join("/")}`, htmlDoRelatorio(r));
+    return j({ ok: sent.ok, relatorio: r, error: sent.error });
+  }
 
   if (body.mode === "test") {
     const userClient = createClient(supabaseUrl, Deno.env.get("SUPABASE_ANON_KEY")!, {
@@ -218,6 +235,13 @@ Deno.serve(async (req) => {
     results.push({ channel_id: ch.id, state: raw, problem, emailed: email ? emailResult?.ok ?? false : null });
   }
 
+  // Daily report e-mail at 8h (POPMED, 09/11), once per account.
+  const relatorios: unknown[] = [];
+  for (const accountId of new Set((channels ?? []).map((c: { account_id: string }) => c.account_id))) {
+    const r = await talvezEnviarRelatorio(admin, accountId, sendEmail);
+    if (r) relatorios.push({ account_id: accountId, ...r });
+  }
+
   // Store orders the Bia created (LOJA_POPMED_ATIVA) are never expired by the
   // store (guide item 6): cancel the unpaid ones older than 7 days. Piggybacks
   // on this 5-minute cron, at most once an hour.
@@ -231,7 +255,7 @@ Deno.serve(async (req) => {
     }
   }
 
-  return j({ ok: true, checked: results.length, results, pedidos_vencidos_cancelados: pedidosCancelados });
+  return j({ ok: true, checked: results.length, results, relatorios, pedidos_vencidos_cancelados: pedidosCancelados });
 });
 
 function j(body: unknown, status = 200) {
