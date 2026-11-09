@@ -220,23 +220,30 @@ async function sendStoreLink(
   const firstName = (contact.name ?? "").trim().split(/\s+/)[0];
   const hello = firstName ? `Oi, ${firstName.charAt(0).toUpperCase()}${firstName.slice(1).toLowerCase()}!` : "Oi!";
   const { data: settings } = await admin.from("company_settings").select("company_name").eq("account_id", call.account_id).maybeSingle();
-  const text = [
-    `${hello} Aqui é a Bia, da ${settings?.company_name ?? "POPMED"}.`,
-    "Como combinamos na ligação:",
-    textoDoLink(r),
-  ].join("\n");
+  // Separate WhatsApp messages (POPMED, 09/11): greeting + Pix note, the
+  // link, then the receipt request (textoDoLink's last two lines).
+  const linhas = textoDoLink(r).split("\n");
+  const partes = [
+    [`${hello} Aqui é a Bia, da ${settings?.company_name ?? "POPMED"}.`, "Como combinamos na ligação:", ...linhas.slice(0, -2)].join("\n"),
+    ...linhas.slice(-2),
+  ];
   try {
-    const sent = await sendText({ ...sender, number: contact.phone_number ?? customerPhone, text });
-    await recordOutcome({ sent: true, message_id: sent.messageId ?? null, valor: r.valor, quantidade: r.quantidade });
-    await recordOutgoingWhatsApp(admin, {
-      accountId: call.account_id,
-      contactId: contact.id,
-      phone: contact.phone_number ?? customerPhone,
-      text,
-      personaId: call.persona_id ?? null,
-      messageId: sent.messageId ?? null,
-      kind: "payment_link",
-    });
+    let primeiroId: string | null = null;
+    for (const [i, text] of partes.entries()) {
+      if (i > 0) await new Promise((ok) => setTimeout(ok, 1200));
+      const sent = await sendText({ ...sender, number: contact.phone_number ?? customerPhone, text });
+      if (i === 0) primeiroId = sent.messageId ?? null;
+      await recordOutgoingWhatsApp(admin, {
+        accountId: call.account_id,
+        contactId: contact.id,
+        phone: contact.phone_number ?? customerPhone,
+        text,
+        personaId: call.persona_id ?? null,
+        messageId: sent.messageId ?? null,
+        kind: "payment_link",
+      });
+    }
+    await recordOutcome({ sent: true, message_id: primeiroId, valor: r.valor, quantidade: r.quantidade });
     return { ok: true, message: "Link enviado pelo WhatsApp. Diga ao cliente que o link já chegou no WhatsApp dele e peça o comprovante depois de pagar." };
   } catch (err) {
     console.error("[voice-send-payment-link] store link send failed", err);

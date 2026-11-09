@@ -13,7 +13,7 @@
 // Logs only order id, status and total.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.74.0";
-import { consultarCliente, FORMAS, type Forma, linkDeCobranca, LojaError, LojaPopmed, type Opcao, textoDoLinkWhatsApp } from "../_shared/loja-popmed.ts";
+import { consultarCliente, FORMAS, type Forma, linkDeCobranca, LojaError, LojaPopmed, type Opcao, partesDoLinkWhatsApp } from "../_shared/loja-popmed.ts";
 import { sendText } from "../_shared/evolution/index.ts";
 import { loadWhatsAppSender } from "../_shared/team-handoff.ts";
 import { recordOutgoingWhatsApp } from "../_shared/whatsapp-history.ts";
@@ -85,12 +85,17 @@ Deno.serve(async (req) => {
       const { data: contact } = await admin.from("contacts").select("name, phone_number").eq("id", conv.contact_id).maybeSingle();
       const sender = await loadWhatsAppSender(admin, conv.account_id);
       if (!sender || !contact?.phone_number) return j({ erro: "WhatsApp desconectado ou contato sem telefone" }, 409);
-      const corpo = textoDoLinkWhatsApp(r, contact.name ?? null).split("\n");
-      const text = novo
-        ? corpo.join("\n")
-        : [corpo[0].replace(/^Claro/, "Oi"), "Desculpe, o link que te mandei antes veio incompleto. Segue o correto:", ...corpo.slice(1)].join("\n");
-      const sent = await sendText({ ...sender, number: contact.phone_number, text });
-      await recordOutgoingWhatsApp(admin, { accountId: conv.account_id, contactId: conv.contact_id, phone: contact.phone_number, text, messageId: sent.messageId ?? null, kind: "payment_link" });
+      // Separate WhatsApp messages, in order (POPMED, 09/11).
+      const partes = partesDoLinkWhatsApp(r, contact.name ?? null);
+      if (!novo) {
+        const [ola, ...resto] = partes[0].split("\n");
+        partes[0] = [ola.replace(/^Claro/, "Oi"), "Desculpe, o link que te mandei antes veio incompleto. Segue o correto:", ...resto].join("\n");
+      }
+      for (const [i, text] of partes.entries()) {
+        if (i > 0) await new Promise((ok) => setTimeout(ok, 1200));
+        const sent = await sendText({ ...sender, number: contact.phone_number, text });
+        await recordOutgoingWhatsApp(admin, { accountId: conv.account_id, contactId: conv.contact_id, phone: contact.phone_number, text, messageId: sent.messageId ?? null, kind: "payment_link" });
+      }
       console.log(`[loja-popmed] ${acao} conversa=${conversationId} reutilizado=${r.reutilizado}`);
       return j({ ok: true, reutilizado: r.reutilizado, forma: r.forma, valor: r.valor });
     }
