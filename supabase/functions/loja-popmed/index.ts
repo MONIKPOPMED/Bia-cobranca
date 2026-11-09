@@ -68,21 +68,30 @@ Deno.serve(async (req) => {
     // 06/11: 3 links went out cut ("https://popmed.com."). Resends the link of
     // the order already on the conversation (linkDeCobranca reuses it after a
     // fresh CPF lookup), in POPMED's fixed text, and records it in the chat.
-    if (acao === "reenviar_link") {
+    // enviar_link { conversationId, forma } (09/11): the customer chose the
+    // form while WhatsApp was down (message lost), so the team asks the Bia to
+    // send the link in her fixed text without waiting for a new reply.
+    if (acao === "reenviar_link" || acao === "enviar_link") {
       const conversationId = String(body.conversationId ?? "");
       const { data: conv } = await admin.from("conversations").select("account_id, contact_id, additional_attributes").eq("id", conversationId).maybeSingle();
       const pedido = (conv?.additional_attributes as Record<string, unknown> | null)?.loja_pedido as { forma?: Forma } | undefined;
-      if (!conv?.contact_id || !pedido?.forma) return j({ erro: "conversa sem pedido da loja" }, 400);
-      const r = await linkDeCobranca(admin, { contactId: conv.contact_id, conversationId, forma: pedido.forma });
+      const novo = acao === "enviar_link";
+      const formaPedida = String(body.forma ?? "") as Forma;
+      if (novo && !Object.hasOwn(FORMAS, formaPedida)) return j({ erro: "forma inválida (cartao | pix_automatico)" }, 400);
+      const formaLink = novo ? formaPedida : pedido?.forma;
+      if (!conv?.contact_id || !formaLink) return j({ erro: "conversa sem pedido da loja" }, 400);
+      const r = await linkDeCobranca(admin, { contactId: conv.contact_id, conversationId, forma: formaLink });
       if (!r.ok) return j({ erro: `link não gerado: ${r.motivo}`, detalhe: r.detalhe ?? null }, 409);
       const { data: contact } = await admin.from("contacts").select("name, phone_number").eq("id", conv.contact_id).maybeSingle();
       const sender = await loadWhatsAppSender(admin, conv.account_id);
       if (!sender || !contact?.phone_number) return j({ erro: "WhatsApp desconectado ou contato sem telefone" }, 409);
       const corpo = textoDoLinkWhatsApp(r, contact.name ?? null).split("\n");
-      const text = [corpo[0].replace(/^Claro/, "Oi"), "Desculpe, o link que te mandei antes veio incompleto. Segue o correto:", ...corpo.slice(1)].join("\n");
+      const text = novo
+        ? corpo.join("\n")
+        : [corpo[0].replace(/^Claro/, "Oi"), "Desculpe, o link que te mandei antes veio incompleto. Segue o correto:", ...corpo.slice(1)].join("\n");
       const sent = await sendText({ ...sender, number: contact.phone_number, text });
       await recordOutgoingWhatsApp(admin, { accountId: conv.account_id, contactId: conv.contact_id, phone: contact.phone_number, text, messageId: sent.messageId ?? null, kind: "payment_link" });
-      console.log(`[loja-popmed] reenviar_link conversa=${conversationId} reutilizado=${r.reutilizado}`);
+      console.log(`[loja-popmed] ${acao} conversa=${conversationId} reutilizado=${r.reutilizado}`);
       return j({ ok: true, reutilizado: r.reutilizado, forma: r.forma, valor: r.valor });
     }
 
