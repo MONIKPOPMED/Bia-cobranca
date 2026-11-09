@@ -8,7 +8,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.74.0";
 import { sendText } from "../_shared/evolution/index.ts";
 import { formatBrPhone, HANDOFF_MARKER, HANDOFF_RULE_WHATSAPP } from "../_shared/handoff.ts";
-import { consultarCliente, contextoDaConsulta, cpfDoContato, type Forma, linkDeCobranca, lojaAtiva, textoDoLinkWhatsApp } from "../_shared/loja-popmed.ts";
+import { consultarCliente, contextoDaConsulta, cpfDoContato, type Forma, linkDeCobranca, lojaAtiva, partesDoLinkWhatsApp } from "../_shared/loja-popmed.ts";
 import { type EvolutionSender, loadTeamWhatsApp, notifyTeam } from "../_shared/team-handoff.ts";
 
 const corsHeaders = {
@@ -253,9 +253,12 @@ Deno.serve(async (req) => {
   // never reaches the customer.
   let handoff = reply.includes(HANDOFF_MARKER);
   reply = reply.split(HANDOFF_MARKER).join("").trim();
+  // Payment link: sent as separate WhatsApp messages (POPMED, 09/11).
+  let partes: string[] = [];
   if (lojaAtiva()) {
     const r = await applyPaymentLink(admin, conversationId, reply);
     reply = r.reply;
+    partes = r.partes ?? [];
     handoff = handoff || r.handoff;
   }
   if (!reply) return j({ skipped: "empty_reply" });
@@ -264,6 +267,8 @@ Deno.serve(async (req) => {
     const team = await loadTeamWhatsApp(admin, accountId);
     if (team) reply = `${reply}\nA mensagem da nossa equipe vai chegar do WhatsApp ${formatBrPhone(team)}.`;
   }
+  if (partes.length > 1) reply = partes[0];
+  const extras = partes.slice(1);
 
   // 7) Persist the AgentBot message (no dispatch from this function — the
   // channel-specific sender owns delivery).
@@ -308,6 +313,23 @@ Deno.serve(async (req) => {
     }
     const sent = await sendText({ url: cfg.evolution_url, apiKey: cfg.evolution_api_key, instanceName: cfg.evolution_instance_name, number, text: reply });
     await admin.from("messages").update({ source_id: sent.messageId ?? null }).eq("id", inserted.id);
+    for (const parte of extras) {
+      await new Promise((ok) => setTimeout(ok, 1200)); // keeps the order on the customer's phone
+      const s = await sendText({ url: cfg.evolution_url, apiKey: cfg.evolution_api_key, instanceName: cfg.evolution_instance_name, number, text: parte });
+      await admin.from("messages").insert({
+        account_id: accountId,
+        conversation_id: conversationId,
+        inbox_id: inboxId ?? null,
+        content: parte,
+        content_type: 0,
+        message_type: 1,
+        sender_type: "AgentBot",
+        sender_id: personaId,
+        private: false,
+        source_id: s.messageId ?? null,
+        content_attributes: { kind: "auto_reply" },
+      });
+    }
     if (handoff) {
       try {
         await handOffToTeam(admin, {
@@ -433,7 +455,7 @@ async function applyPaymentLink(
   admin: any,
   conversationId: string,
   reply: string,
-): Promise<{ reply: string; handoff: boolean }> {
+): Promise<{ reply: string; handoff: boolean; partes?: string[] }> {
   const marker = LINK_MARKERS.find((m) => new RegExp(m.re.source).test(reply));
   if (!marker) return { reply, handoff: false };
   const { data: conv } = await admin.from("conversations").select("contact_id").eq("id", conversationId).maybeSingle();
@@ -445,7 +467,8 @@ async function applyPaymentLink(
     // model's own text around the link is dropped (it also cut the link to
     // "https://popmed.com." with the old "Adquirir agora" cleanup).
     const { data: contact } = await admin.from("contacts").select("name").eq("id", conv!.contact_id).maybeSingle();
-    return { reply: textoDoLinkWhatsApp(r, contact?.name ?? null), handoff: false };
+    const partes = partesDoLinkWhatsApp(r, contact?.name ?? null);
+    return { reply: partes.join("\n"), handoff: false, partes };
   }
   console.warn(`[persona-auto-reply] no store link: ${r.motivo}`);
   if (r.motivo === "ja_pago") {

@@ -464,14 +464,23 @@ const proximaMensalidade = (r: Extract<LinkCobranca, { ok: true }>) => (r.reativ
  *   Depois de pagar, me envie o comprovante por aqui, por favor.
  */
 export function textoDoLinkWhatsApp(r: Extract<LinkCobranca, { ok: true }>, nome: string | null): string {
+  return partesDoLinkWhatsApp(r, nome).join("\n");
+}
+
+/**
+ * The same text as separate WhatsApp messages (POPMED, 09/11):
+ *   1. "Claro, Maria! 😊" + Pix Automático note
+ *   2. "Segue link: …"
+ *   3. "Depois de pagar, me envie o comprovante por aqui, por favor."
+ */
+export function partesDoLinkWhatsApp(r: Extract<LinkCobranca, { ok: true }>, nome: string | null): string[] {
   const primeiro = (nome ?? "").trim().split(/\s+/)[0] ?? "";
   const ola = primeiro ? `Claro, ${primeiro.charAt(0).toUpperCase()}${primeiro.slice(1).toLowerCase()}! 😊` : "Claro! 😊";
   return [
-    ola,
-    ...(r.forma === "pix_automatico" ? [notaPixAutomatico(proximaMensalidade(r))] : []),
+    [ola, ...(r.forma === "pix_automatico" ? [notaPixAutomatico(proximaMensalidade(r))] : [])].join("\n"),
     `Segue link: ${r.link}`,
     "Depois de pagar, me envie o comprovante por aqui, por favor.",
-  ].join("\n");
+  ];
 }
 
 const brl = (n: number) => new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(n);
