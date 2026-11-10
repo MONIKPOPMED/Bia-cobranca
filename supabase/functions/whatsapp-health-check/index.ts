@@ -23,7 +23,16 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.74.0";
 import { checkWhatsAppNumbers, getConnectionState, normalizeStatus } from "../_shared/evolution/index.ts";
 import { LojaPopmed, lojaAtiva } from "../_shared/loja-popmed.ts";
-import { diaSP, enviarPorWhatsApp, htmlDoRelatorio, montarRelatorio, talvezEnviarRelatorio, textoDoRelatorio } from "../_shared/relatorio-diario.ts";
+import {
+  diaSP,
+  enviarPorWhatsApp,
+  enviarRelatorioParaEquipe,
+  htmlDoRelatorio,
+  montarRelatorio,
+  talvezEnviarRelatorio,
+  talvezEnviarRelatorioMensal,
+  textoDoRelatorio,
+} from "../_shared/relatorio-diario.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -80,7 +89,7 @@ Deno.serve(async (req) => {
   const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
   const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
   const admin = createClient(supabaseUrl, serviceKey);
-  const body = await req.json().catch(() => ({})) as { mode?: string; dia?: string; whatsapp?: string };
+  const body = await req.json().catch(() => ({})) as { mode?: string; dia?: string; de?: string; ate?: string; whatsapp?: string };
 
   // ── Auth: cron/service, or an admin user for the test e-mail ──
   const authHeader = req.headers.get("Authorization") ?? "";
@@ -107,6 +116,33 @@ Deno.serve(async (req) => {
     const numero = String(body.whatsapp ?? "").replace(/\D/g, "");
     const wa = numero ? await enviarPorWhatsApp(admin, role.account_id, `[TESTE]\n${textoDoRelatorio(r)}`, [numero]) : null;
     return j({ ok: sent.ok || !!wa?.ok, relatorio: r, email: sent, whatsapp: wa });
+  }
+
+  // Period report on demand (admin, 10/11): { mode: "relatorio_periodo",
+  // de: "aaaa-mm-dd", ate?: "aaaa-mm-dd" (default today), whatsapp?: number }.
+  // With `whatsapp` it goes only to that number (test); without it, to the
+  // team list of the daily report.
+  if (body.mode === "relatorio_periodo") {
+    const userClient = createClient(supabaseUrl, Deno.env.get("SUPABASE_ANON_KEY")!, {
+      global: { headers: { Authorization: authHeader } },
+    });
+    const { data: u } = await userClient.auth.getUser();
+    if (!u?.user?.id) return j({ error: "unauthorized" }, 401);
+    const { data: role } = await admin.from("user_roles").select("account_id, role").eq("user_id", u.user.id).eq("role", "admin").limit(1).maybeSingle();
+    if (!role) return j({ error: "admin role required" }, 403);
+    const dataOk = (s: unknown) => /^\d{4}-\d{2}-\d{2}$/.test(String(s ?? ""));
+    if (!dataOk(body.de)) return j({ error: "de (aaaa-mm-dd) obrigatório" }, 400);
+    const ate = dataOk(body.ate) ? String(body.ate) : diaSP(new Date());
+    if (ate < String(body.de)) return j({ error: "ate antes de de" }, 400);
+    const r = await montarRelatorio(admin, role.account_id, String(body.de), ate);
+    const numero = String(body.whatsapp ?? "").replace(/\D/g, "");
+    if (numero) {
+      const wa = await enviarPorWhatsApp(admin, role.account_id, `[TESTE]\n${textoDoRelatorio(r)}`, [numero]);
+      return j({ ok: wa.ok, relatorio: r, whatsapp: wa });
+    }
+    const env = await enviarRelatorioParaEquipe(admin, role.account_id, r, sendEmail);
+    console.log(`[whatsapp-health-check] relatorio_periodo ${body.de}..${ate} whatsapp=${env.whatsapp} email=${env.email}`);
+    return j({ ok: env.ok, relatorio: r, envio: env });
   }
 
   if (body.mode === "test") {
@@ -243,6 +279,9 @@ Deno.serve(async (req) => {
   for (const accountId of new Set((channels ?? []).map((c: { account_id: string }) => c.account_id))) {
     const r = await talvezEnviarRelatorio(admin, accountId, sendEmail);
     if (r) relatorios.push({ account_id: accountId, ...r });
+    // Last day of the month at 18h: the month's total (POPMED, 10/11).
+    const m = await talvezEnviarRelatorioMensal(admin, accountId, sendEmail);
+    if (m) relatorios.push({ account_id: accountId, ...m });
   }
 
   // Store orders the Bia created (LOJA_POPMED_ATIVA) are never expired by the
