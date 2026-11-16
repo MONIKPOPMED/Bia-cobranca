@@ -57,7 +57,31 @@ function brTime(d = new Date()) {
 // (POPMED, 4057). Overrides: accounts.internal_attributes.alerts.whatsapp_numeros
 // / .whatsapp_instancia.
 const ALERTA_NUMEROS = ["5548991667070", "5548991917441"]; // Monik, Matheus
-const ALERTA_INSTANCIA = "lia";
+/** The Lia's WhatsApp (POPMED 4057). Its instance name changes when the Lia
+ * team recreates the connection (16/11: "lia" → "Lia vendas ia nova"), so the
+ * alert picks whichever connected instance owns this number. */
+const ALERTA_REMETENTE = "554896994057";
+const ALERTA_INSTANCIA_RESERVA = "lia";
+
+/** Name of the connected Evolution instance whose WhatsApp is `numero`. */
+async function instanciaDoNumero(evo: { url: string; apiKey: string }, numero: string): Promise<string | null> {
+  try {
+    const res = await fetch(`${evo.url.replace(/\/+$/, "")}/instance/fetchInstances`, { headers: { apikey: evo.apiKey } });
+    if (!res.ok) return null;
+    const lista = await res.json().catch(() => []);
+    if (!Array.isArray(lista)) return null;
+    // deno-lint-ignore no-explicit-any
+    const achada = lista.find((i: any) => {
+      const dono = String(i?.ownerJid ?? i?.instance?.owner ?? "").replace(/\D/g, "");
+      const estado = String(i?.connectionStatus ?? i?.instance?.status ?? i?.instance?.state ?? "");
+      return dono.startsWith(numero) && estado === "open";
+    });
+    // deno-lint-ignore no-explicit-any
+    return achada ? String((achada as any).name ?? (achada as any).instance?.instanceName ?? "") || null : null;
+  } catch {
+    return null;
+  }
+}
 
 // deno-lint-ignore no-explicit-any
 async function enviarAlertaWhatsApp(admin: any, accountId: string, evo: { url: string; apiKey: string }, texto: string) {
@@ -67,7 +91,9 @@ async function enviarAlertaWhatsApp(admin: any, accountId: string, evo: { url: s
   const numeros: string[] = Array.isArray(alerts.whatsapp_numeros) && alerts.whatsapp_numeros.length
     ? alerts.whatsapp_numeros.map((n: unknown) => String(n).replace(/\D/g, ""))
     : ALERTA_NUMEROS;
-  const instanceName = String(alerts.whatsapp_instancia ?? ALERTA_INSTANCIA);
+  const instanceName = alerts.whatsapp_instancia
+    ? String(alerts.whatsapp_instancia)
+    : (await instanciaDoNumero(evo, String(alerts.whatsapp_remetente ?? ALERTA_REMETENTE))) ?? ALERTA_INSTANCIA_RESERVA;
   let enviados = 0;
   const erros: string[] = [];
   for (const number of numeros) {
