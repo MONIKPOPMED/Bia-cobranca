@@ -2,7 +2,7 @@
 //
 // Aprova manualmente um payment_arrangement em pendente_aprovacao.
 // Side-effects: muda status pra pendente, registra approved_at/by, dispara
-// proposal-dispatch em background (Asaas + WA + Email).
+// proposal-dispatch em background (Asaas + WhatsApp).
 //
 // Body: { arrangement_id: uuid, override?: { valor_negociado?, num_parcelas?,
 //         metodo?, primeiro_vencimento? } }
@@ -64,7 +64,7 @@ Deno.serve(async (req) => {
   });
   if (rpcErr) return j({ error: rpcErr.message }, 400);
 
-  // Dispara proposal-dispatch (Asaas + WA + Email) em background
+  // Dispara proposal-dispatch (Asaas + WhatsApp) em background
   fetch(`${supabaseUrl}/functions/v1/proposal-dispatch`, {
     method: "POST",
     headers: {
