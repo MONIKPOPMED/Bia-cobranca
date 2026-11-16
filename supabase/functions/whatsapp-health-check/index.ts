@@ -1,7 +1,7 @@
 // whatsapp-health-check
 // ---------------------
-// Watches the Bia's WhatsApp (Evolution) and alerts the POPMED team (e-mail +
-// WhatsApp from the Lia's number, see enviarAlertaWhatsApp) when it
+// Watches the Bia's WhatsApp (Evolution) and alerts the POPMED team by
+// WhatsApp from the Lia's number (enviarAlertaWhatsApp; no e-mail since 16/11) when it
 // drops, gets blocked/restricted or stops sending — and again when it is
 // back. Runs from pg_cron every 5 min (x-cron-secret = LOVABLE_CRON_SECRET,
 // same as voice-campaign-dispatch).
@@ -13,13 +13,10 @@
 //     path, _shared/evolution/health.ts).
 //
 // State lives on channels.config.evolution_alert:
-//   { status: "down" | "up", since, reason, last_email_at }
-// "Down" e-mails go out on the transition and every REMIND_HOURS while down.
+//   { status: "down" | "up", since, reason, last_email_at (= last alert sent) }
+// "Down" alerts go out on the transition and every REMIND_HOURS while down.
 //
-// Recipients: accounts.internal_attributes.alerts.whatsapp_emails, else
-// DEFAULT_RECIPIENTS (asked by POPMED on 15/10).
-//
-// Manual test (admin user JWT): POST { "mode": "test" } e-mails a test alert.
+// Manual test (admin user JWT): POST { "mode": "test" } sends a test alert.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.74.0";
 import { checkWhatsAppNumbers, getConnectionState, normalizeStatus, sendText } from "../_shared/evolution/index.ts";
@@ -28,7 +25,6 @@ import {
   diaSP,
   enviarPorWhatsApp,
   enviarRelatorioParaEquipe,
-  htmlDoRelatorio,
   montarRelatorio,
   talvezEnviarRelatorio,
   talvezEnviarRelatorioMensal,
@@ -40,7 +36,6 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-cron-secret",
 };
 
-const DEFAULT_RECIPIENTS = ["monikmendes@popmed.com.br", "qualidade@popmed.com.br"];
 const REMIND_HOURS = 2;
 /** A send failure newer than this still counts as "the WhatsApp is failing". */
 const SEND_ERROR_WINDOW_MIN = 30;
@@ -56,36 +51,8 @@ function brTime(d = new Date()) {
   return d.toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo", dateStyle: "short", timeStyle: "short" });
 }
 
-async function sendEmail(to: string[], subject: string, html: string): Promise<{ ok: boolean; error?: string }> {
-  const key = Deno.env.get("RESEND_API_KEY");
-  const from = Deno.env.get("RESEND_FROM_EMAIL");
-  if (!key || !from) return { ok: false, error: "RESEND_API_KEY / RESEND_FROM_EMAIL não configurados" };
-  const res = await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ from, to, subject, html }),
-  });
-  if (!res.ok) return { ok: false, error: `Resend ${res.status}: ${(await res.text()).slice(0, 300)}` };
-  return { ok: true };
-}
-
-function emailHtml(title: string, lines: string[], color: string) {
-  return `<div style="font-family:Arial,sans-serif;max-width:560px">
-<h2 style="color:${color};margin:0 0 12px">${title}</h2>
-${lines.map((l) => `<p style="margin:0 0 8px;font-size:14px;color:#222">${l}</p>`).join("\n")}
-<p style="margin:16px 0 0;font-size:12px;color:#777">Aviso automático da Bia cobrança (POPMED).</p>
-</div>`;
-}
-
-// deno-lint-ignore no-explicit-any
-async function recipientsFor(admin: any, accountId: string): Promise<string[]> {
-  const { data } = await admin.from("accounts").select("internal_attributes").eq("id", accountId).maybeSingle();
-  const list = (data?.internal_attributes as any)?.alerts?.whatsapp_emails;
-  return Array.isArray(list) && list.length ? list.map(String) : DEFAULT_RECIPIENTS;
-}
-
-// WhatsApp alert (POPMED, 16/11: the e-mail key is invalid and nobody knew the
-// Bia was down from Thu to Mon). It can't go out through the Bia's own number,
+// WhatsApp alert (POPMED, 16/11: nobody knew the Bia was down from Thu to Mon;
+// e-mail removed at POPMED's request, only WhatsApp). It can't go out through the Bia's own number,
 // so it uses another instance on the same Evolution server: the Lia's
 // (POPMED, 4057). Overrides: accounts.internal_attributes.alerts.whatsapp_numeros
 // / .whatsapp_instancia.
@@ -125,7 +92,7 @@ Deno.serve(async (req) => {
   const admin = createClient(supabaseUrl, serviceKey);
   const body = await req.json().catch(() => ({})) as { mode?: string; dia?: string; de?: string; ate?: string; whatsapp?: string };
 
-  // ── Auth: cron/service, or an admin user for the test e-mail ──
+  // ── Auth: cron/service, or an admin user for the tests ──
   const authHeader = req.headers.get("Authorization") ?? "";
   const cronHeader = req.headers.get("x-cron-secret") ?? "";
   const cronSecrets = [Deno.env.get("LOVABLE_CRON_SECRET"), Deno.env.get("LOVABLE_CRON_SECRET_PREVIOUS")]
@@ -133,23 +100,22 @@ Deno.serve(async (req) => {
   const isService = !!serviceKey && authHeader.includes(serviceKey);
   const isCron = !!cronHeader && cronSecrets.some((s) => safeEqual(s, cronHeader));
 
-  // Daily report preview (admin): { mode: "relatorio_teste", dia?: "aaaa-mm-dd" }
-  // e-mails only the logged-in admin (default: yesterday).
+  // Daily report preview (admin): { mode: "relatorio_teste", dia?: "aaaa-mm-dd",
+  // whatsapp: number } — only to that number (default day: yesterday).
   if (body.mode === "relatorio_teste") {
     const userClient = createClient(supabaseUrl, Deno.env.get("SUPABASE_ANON_KEY")!, {
       global: { headers: { Authorization: authHeader } },
     });
     const { data: u } = await userClient.auth.getUser();
-    if (!u?.user?.id || !u.user.email) return j({ error: "unauthorized" }, 401);
+    if (!u?.user?.id) return j({ error: "unauthorized" }, 401);
     const { data: role } = await admin.from("user_roles").select("account_id, role").eq("user_id", u.user.id).eq("role", "admin").limit(1).maybeSingle();
     if (!role) return j({ error: "admin role required" }, 403);
     const dia = /^\d{4}-\d{2}-\d{2}$/.test(String(body.dia ?? "")) ? String(body.dia) : diaSP(new Date(Date.now() - 24 * 3600_000));
     const r = await montarRelatorio(admin, role.account_id, dia);
-    const sent = await sendEmail([u.user.email], `[TESTE] Relatório da Bia — ${dia.split("-").reverse().join("/")}`, htmlDoRelatorio(r));
     // WhatsApp test goes only to the number given (digits), never to the full list.
     const numero = String(body.whatsapp ?? "").replace(/\D/g, "");
     const wa = numero ? await enviarPorWhatsApp(admin, role.account_id, `[TESTE]\n${textoDoRelatorio(r)}`, [numero]) : null;
-    return j({ ok: sent.ok || !!wa?.ok, relatorio: r, email: sent, whatsapp: wa });
+    return j({ ok: !!wa?.ok, relatorio: r, whatsapp: wa });
   }
 
   // Period report on demand (admin, 10/11): { mode: "relatorio_periodo",
@@ -174,8 +140,8 @@ Deno.serve(async (req) => {
       const wa = await enviarPorWhatsApp(admin, role.account_id, `[TESTE]\n${textoDoRelatorio(r)}`, [numero]);
       return j({ ok: wa.ok, relatorio: r, whatsapp: wa });
     }
-    const env = await enviarRelatorioParaEquipe(admin, role.account_id, r, sendEmail);
-    console.log(`[whatsapp-health-check] relatorio_periodo ${body.de}..${ate} whatsapp=${env.whatsapp} email=${env.email}`);
+    const env = await enviarRelatorioParaEquipe(admin, role.account_id, r);
+    console.log(`[whatsapp-health-check] relatorio_periodo ${body.de}..${ate} whatsapp=${env.whatsapp}`);
     return j({ ok: env.ok, relatorio: r, envio: env });
   }
 
@@ -187,16 +153,7 @@ Deno.serve(async (req) => {
     if (!u?.user?.id) return j({ error: "unauthorized" }, 401);
     const { data: role } = await admin.from("user_roles").select("account_id, role").eq("user_id", u.user.id).eq("role", "admin").limit(1).maybeSingle();
     if (!role) return j({ error: "admin role required" }, 403);
-    const to = await recipientsFor(admin, role.account_id);
-    const sent = await sendEmail(
-      to,
-      "Teste — aviso de queda do WhatsApp da Bia",
-      emailHtml("Teste do aviso de WhatsApp", [
-        `Este é um e-mail de teste enviado em ${brTime()}.`,
-        "Se o WhatsApp da Bia cair, for bloqueado ou parar de enviar mensagens, vocês recebem um aviso como este.",
-      ], "#2563eb"),
-    );
-    // Same test through the WhatsApp alert (Lia's number → Monik, Matheus).
+    // Test through the WhatsApp alert (Lia's number → Monik, Matheus).
     const { data: ch } = await admin.from("channels").select("config").eq("account_id", role.account_id).eq("channel_type", "whatsapp").limit(1).maybeSingle();
     // deno-lint-ignore no-explicit-any
     const c = (ch?.config ?? {}) as Record<string, any>;
@@ -207,7 +164,7 @@ Deno.serve(async (req) => {
         "Se o WhatsApp da Bia cair, for bloqueado ou parar de enviar, vocês recebem um aviso como este por aqui.",
       ].join("\n"))
       : null;
-    return j({ ok: sent.ok || !!wa?.ok, to, error: sent.error, whatsapp: wa });
+    return j({ ok: !!wa?.ok, whatsapp: wa });
   }
 
   if (!isService && !isCron) return j({ error: "service role required" }, 403);
@@ -259,22 +216,12 @@ Deno.serve(async (req) => {
     const prev = (cfg.evolution_alert ?? {}) as { status?: string; since?: string; reason?: string; last_email_at?: string };
     const now = new Date();
     let next = prev;
-    let email: { subject: string; html: string } | null = null;
     let whats: string | null = null;
 
     if (problem) {
       const firstTime = prev.status !== "down";
       const remind = !firstTime && (!prev.last_email_at || now.getTime() - new Date(prev.last_email_at).getTime() > REMIND_HOURS * 3600_000);
       if (firstTime || remind) {
-        email = {
-          subject: firstTime ? "🔴 WhatsApp da Bia caiu" : "🔴 WhatsApp da Bia continua fora do ar",
-          html: emailHtml(firstTime ? "WhatsApp da Bia fora do ar" : "WhatsApp da Bia continua fora do ar", [
-            `<b>Desde:</b> ${brTime(firstTime ? now : new Date(prev.since ?? now))}`,
-            `<b>O que aconteceu:</b> ${problem}`,
-            "Enquanto isso, a Bia não consegue mandar nem receber mensagens no WhatsApp (campanhas, respostas, link de pagamento e avisos após ligação).",
-            "<b>O que fazer:</b> abra o app em <b>Canais</b> e clique em <b>Reconectar</b>; escaneie o QR Code com o celular do número da Bia. Se o WhatsApp tiver sido bloqueado, verifique o aplicativo no celular.",
-          ], "#dc2626"),
-        };
         whats = [
           firstTime ? "🔴 *WhatsApp da Bia caiu*" : "🔴 *WhatsApp da Bia continua fora do ar*",
           `Desde: ${brTime(firstTime ? now : new Date(prev.since ?? now))}`,
@@ -283,15 +230,8 @@ Deno.serve(async (req) => {
           "O que fazer: no app, Canais → Reconectar e escanear o QR Code com o celular da Bia (6774).",
         ].join("\n");
       }
-      next = { status: "down", since: firstTime ? now.toISOString() : prev.since, reason: problem, last_email_at: email ? now.toISOString() : prev.last_email_at };
+      next = { status: "down", since: firstTime ? now.toISOString() : prev.since, reason: problem, last_email_at: whats ? now.toISOString() : prev.last_email_at };
     } else if (prev.status === "down") {
-      email = {
-        subject: "🟢 WhatsApp da Bia voltou",
-        html: emailHtml("WhatsApp da Bia voltou a funcionar", [
-          `<b>Voltou em:</b> ${brTime(now)} (estava fora desde ${brTime(new Date(prev.since ?? now))}).`,
-          "Se havia campanha de WhatsApp pausada por causa da queda, retome em Campanhas → WhatsApp.",
-        ], "#16a34a"),
-      };
       whats = [
         "🟢 *WhatsApp da Bia voltou*",
         `Voltou em: ${brTime(now)} (estava fora desde ${brTime(new Date(prev.since ?? now))}).`,
@@ -300,24 +240,20 @@ Deno.serve(async (req) => {
       next = { status: "up", since: now.toISOString(), last_email_at: now.toISOString() };
     }
 
-    let emailResult: { ok: boolean; error?: string } | null = null;
     let waResult: { ok: boolean; enviados: number } | null = null;
-    if (email) {
-      const to = await recipientsFor(admin, ch.account_id);
-      emailResult = await sendEmail(to, email.subject, email.html);
-      if (!emailResult.ok) console.error(`[whatsapp-health-check] e-mail failed: ${emailResult.error}`);
-      if (whats) waResult = await enviarAlertaWhatsApp(admin, ch.account_id, evo, whats);
-      // Neither channel reached anyone: try again next run.
-      if (!emailResult.ok && !waResult?.ok) next = { ...next, last_email_at: prev.last_email_at };
-      // A "back" notice that reached nobody is not retried (the state moved on).
-      // Also in the app's notifications, for whoever is logged in.
+    if (whats) {
+      waResult = await enviarAlertaWhatsApp(admin, ch.account_id, evo, whats);
+      // Reached nobody: a "down" alert is tried again next run (a "back"
+      // notice is not — the state moved on).
+      if (!waResult.ok) next = { ...next, last_email_at: prev.last_email_at };
+      // Also in the app's notifications: on each state change and each alert that went out.
       const { data: admins } = await admin.from("user_roles").select("user_id").eq("account_id", ch.account_id).eq("role", "admin");
-      if (admins?.length) {
+      if (admins?.length && (waResult.ok || prev.status !== next.status)) {
         await admin.from("notifications").insert(admins.map((a: { user_id: string }) => ({
           account_id: ch.account_id,
           user_id: a.user_id,
           kind: problem ? "whatsapp_down" : "whatsapp_up",
-          title: email!.subject.replace(/^\S+\s/, ""),
+          title: problem ? "WhatsApp da Bia fora do ar" : "WhatsApp da Bia voltou",
           body: problem ?? "O WhatsApp da Bia voltou a funcionar.",
           link_to: "/channels",
           metadata: { channel_id: ch.id },
@@ -330,17 +266,17 @@ Deno.serve(async (req) => {
       const { data: fresh } = await admin.from("channels").select("config").eq("id", ch.id).maybeSingle();
       await admin.from("channels").update({ config: { ...(fresh?.config ?? cfg), evolution_alert: next } }).eq("id", ch.id);
     }
-    console.log(`[whatsapp-health-check] channel=${ch.id} state=${raw} problem=${problem ?? "—"} email=${email ? (emailResult?.ok ? "sent" : "failed") : "—"} whatsapp=${waResult ? waResult.enviados : "—"}`);
-    results.push({ channel_id: ch.id, state: raw, problem, emailed: email ? emailResult?.ok ?? false : null });
+    console.log(`[whatsapp-health-check] channel=${ch.id} state=${raw} problem=${problem ?? "—"} alerta_whatsapp=${waResult ? waResult.enviados : "—"}`);
+    results.push({ channel_id: ch.id, state: raw, problem, alertou: waResult ? waResult.ok : null });
   }
 
-  // Daily report e-mail at 8h (POPMED, 09/11), once per account.
+  // Daily WhatsApp report at 8h on weekdays (POPMED, 09/11 and 16/11), once per account.
   const relatorios: unknown[] = [];
   for (const accountId of new Set((channels ?? []).map((c: { account_id: string }) => c.account_id))) {
-    const r = await talvezEnviarRelatorio(admin, accountId, sendEmail);
+    const r = await talvezEnviarRelatorio(admin, accountId);
     if (r) relatorios.push({ account_id: accountId, ...r });
     // Last day of the month at 18h: the month's total (POPMED, 10/11).
-    const m = await talvezEnviarRelatorioMensal(admin, accountId, sendEmail);
+    const m = await talvezEnviarRelatorioMensal(admin, accountId);
     if (m) relatorios.push({ account_id: accountId, ...m });
   }
 

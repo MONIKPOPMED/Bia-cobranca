@@ -1,18 +1,16 @@
-// Daily e-mail report of the Bia's WhatsApp work (POPMED, 09/11): every day at
-// 8h (America/Sao_Paulo) a summary of the previous day goes to the team.
+// Daily WhatsApp report of the Bia's work (POPMED, 09/11): on weekdays at 8h
+// (America/Sao_Paulo) a summary of the previous working day goes to the team,
+// from the Bia's own WhatsApp (no e-mail since 16/11, POPMED's request).
 // Runs inside whatsapp-health-check (pg_cron every 5 min); sent once a day,
 // remembered on accounts.internal_attributes.relatorio_diario.ultimo.
 //
-// Recipients: accounts.internal_attributes.relatorio_diario.emails, else
-// DESTINATARIOS.
+// Recipients: accounts.internal_attributes.relatorio_diario.whatsapp, else
+// WHATSAPP_PADRAO.
 
 import { sendText } from "./evolution/index.ts";
 import { loadWhatsAppSender } from "./team-handoff.ts";
 
-const DESTINATARIOS = ["monikmendes@popmed.com.br", "emerson@bbmdigital.com.br", "eduardo@bbmdigital.com.br"];
 const HORA = 8;
-
-type Envio = (to: string[], subject: string, html: string) => Promise<{ ok: boolean; error?: string }>;
 
 /** São Paulo has no DST since 2019: UTC-3. */
 const SP_OFFSET_H = 3;
@@ -26,7 +24,6 @@ function inicioDoDiaSP(dia: string): Date {
 }
 
 const br = (dia: string) => dia.split("-").reverse().join("/");
-const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
 
 export type Relatorio = {
   dia: string;
@@ -125,24 +122,7 @@ function tituloDoRelatorio(r: Relatorio): string {
   return r.ate ? `Relatório da Bia — ${br(r.dia)} a ${br(r.ate)}` : `Relatório da Bia — dia ${br(r.dia)}`;
 }
 
-export function htmlDoRelatorio(r: Relatorio): string {
-  const linha = (n: number, txt: string) => `<p style="margin:0 0 8px;font-size:15px;color:#222"><b>${n}</b> ${txt}</p>`;
-  const nomes = r.nomesComprovantes.length
-    ? `<ul style="margin:4px 0 0;padding-left:20px;font-size:14px;color:#222">${r.nomesComprovantes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>`
-    : `<p style="margin:4px 0 0;font-size:14px;color:#777">Nenhum.</p>`;
-  return `<div style="font-family:Arial,sans-serif;max-width:560px">
-<h2 style="color:#7c3aed;margin:0 0 12px">${esc(tituloDoRelatorio(r))}</h2>
-${linha(r.disparos, r.disparos === 1 ? "disparo" : "disparos")}
-${linha(r.links, r.links === 1 ? "cliente recebeu link de pagamento da Bia" : "clientes receberam link de pagamento da Bia")}
-${linha(r.responderam, r.responderam === 1 ? "cliente respondeu" : "clientes responderam")}
-${linha(r.comprovantes, r.comprovantes === 1 ? "cliente enviou comprovante de pagamento e a Bia encaminhou ao grupo do financeiro" : "clientes enviaram comprovante de pagamento e a Bia encaminhou ao grupo do financeiro")}
-<p style="margin:12px 0 0;font-size:14px;color:#222"><b>Nome desses clientes:</b></p>
-${nomes}
-<p style="margin:16px 0 0;font-size:12px;color:#777">Relatório automático da Bia cobrança (POPMED)${r.ate ? "" : ", enviado todo dia às 8h"}.</p>
-</div>`;
-}
-
-/** WhatsApp version (09/11: the e-mail service key is invalid; POPMED asked for WhatsApp). */
+/** The report as a WhatsApp message. */
 export function textoDoRelatorio(r: Relatorio): string {
   const nomes = r.nomesComprovantes.length ? r.nomesComprovantes.map((n) => `• ${n}`).join("\n") : "Nenhum.";
   return [
@@ -193,14 +173,6 @@ export async function enviarPorWhatsApp(admin: any, accountId: string, texto: st
   return { ok: enviados > 0, enviados, erro: erros.length ? erros.join(" | ") : undefined };
 }
 
-// deno-lint-ignore no-explicit-any
-async function destinatarios(admin: any, accountId: string): Promise<string[]> {
-  const { data } = await admin.from("accounts").select("internal_attributes").eq("id", accountId).maybeSingle();
-  // deno-lint-ignore no-explicit-any
-  const lista = (data?.internal_attributes as any)?.relatorio_diario?.emails;
-  return Array.isArray(lista) && lista.length ? lista.map(String) : DESTINATARIOS;
-}
-
 /**
  * Day the 8h report of `hoje` covers, or null when none goes out
  * (POPMED, 16/11): Tue–Fri → the day before; Monday → the previous Friday;
@@ -215,7 +187,7 @@ export function diaDoRelatorio(hoje: string): string | null {
 
 /** At 8h on weekdays, once a day: the previous working day's report. Never throws. */
 // deno-lint-ignore no-explicit-any
-export async function talvezEnviarRelatorio(admin: any, accountId: string, enviar: Envio, agora = new Date()) {
+export async function talvezEnviarRelatorio(admin: any, accountId: string, agora = new Date()) {
   try {
     const hoje = diaSP(agora);
     const horaSP = (agora.getUTCHours() + 24 - SP_OFFSET_H) % 24;
@@ -227,18 +199,14 @@ export async function talvezEnviarRelatorio(admin: any, accountId: string, envia
     const ia = (acc?.internal_attributes ?? {}) as Record<string, any>;
     if (ia.relatorio_diario?.ultimo === hoje) return null;
     const r = await montarRelatorio(admin, accountId, ontem);
-    // WhatsApp is the main channel; the e-mail goes too when the Resend key works.
     const wa = await enviarPorWhatsApp(admin, accountId, textoDoRelatorio(r));
-    const to = await destinatarios(admin, accountId);
-    const res = await enviar(to, `Relatório da Bia — ${br(ontem)}`, htmlDoRelatorio(r));
-    if (!res.ok) console.warn(`[relatorio-diario] e-mail falhou: ${res.error}`);
     if (wa.erro) console.warn(`[relatorio-diario] WhatsApp: ${wa.erro}`);
-    if (!wa.ok && !res.ok) return { enviado: false, erro: wa.erro ?? res.error };
+    if (!wa.ok) return { enviado: false, erro: wa.erro };
     await admin.from("accounts").update({
       internal_attributes: { ...ia, relatorio_diario: { ...(ia.relatorio_diario ?? {}), ultimo: hoje } },
     }).eq("id", accountId);
-    console.log(`[relatorio-diario] enviado dia=${ontem} whatsapp=${wa.enviados} email=${res.ok}`);
-    return { enviado: true, dia: ontem, whatsapp: wa.enviados, email: res.ok };
+    console.log(`[relatorio-diario] enviado dia=${ontem} whatsapp=${wa.enviados}`);
+    return { enviado: true, dia: ontem, whatsapp: wa.enviados };
   } catch (e) {
     console.error("[relatorio-diario] falhou", e);
     return { enviado: false, erro: e instanceof Error ? e.message : String(e) };
@@ -256,14 +224,12 @@ export async function montarRelatorioDoMes(admin: any, accountId: string, dia: s
   return { ...r, ate: dia, titulo: `Relatório do mês da Bia — ${MESES[Number(mes) - 1]}/${ano} (${br(`${ano}-${mes}-01`)} a ${br(dia)})` };
 }
 
-/** Sends a report to the team: WhatsApp (main) + e-mail. */
+/** Sends a report to the team by WhatsApp. */
 // deno-lint-ignore no-explicit-any
-export async function enviarRelatorioParaEquipe(admin: any, accountId: string, r: Relatorio, enviar: Envio) {
+export async function enviarRelatorioParaEquipe(admin: any, accountId: string, r: Relatorio) {
   const wa = await enviarPorWhatsApp(admin, accountId, textoDoRelatorio(r));
-  const res = await enviar(await destinatarios(admin, accountId), tituloDoRelatorio(r), htmlDoRelatorio(r));
-  if (!res.ok) console.warn(`[relatorio-diario] e-mail falhou: ${res.error}`);
   if (wa.erro) console.warn(`[relatorio-diario] WhatsApp: ${wa.erro}`);
-  return { ok: wa.ok || res.ok, whatsapp: wa.enviados, email: res.ok, erro: wa.erro ?? res.error };
+  return { ok: wa.ok, whatsapp: wa.enviados, erro: wa.erro };
 }
 
 /**
@@ -271,7 +237,7 @@ export async function enviarRelatorioParaEquipe(admin: any, accountId: string, r
  * Remembered on internal_attributes.relatorio_mensal.ultimo ("aaaa-mm"). Never throws.
  */
 // deno-lint-ignore no-explicit-any
-export async function talvezEnviarRelatorioMensal(admin: any, accountId: string, enviar: Envio, agora = new Date()) {
+export async function talvezEnviarRelatorioMensal(admin: any, accountId: string, agora = new Date()) {
   try {
     const hoje = diaSP(agora);
     const amanha = diaSP(new Date(agora.getTime() + 24 * 3600_000));
@@ -283,13 +249,13 @@ export async function talvezEnviarRelatorioMensal(admin: any, accountId: string,
     const ia = (acc?.internal_attributes ?? {}) as Record<string, any>;
     if (ia.relatorio_mensal?.ultimo === mes) return null;
     const r = await montarRelatorioDoMes(admin, accountId, hoje);
-    const env = await enviarRelatorioParaEquipe(admin, accountId, r, enviar);
+    const env = await enviarRelatorioParaEquipe(admin, accountId, r);
     if (!env.ok) return { mensal: true, enviado: false, erro: env.erro };
     await admin.from("accounts").update({
       internal_attributes: { ...ia, relatorio_mensal: { ...(ia.relatorio_mensal ?? {}), ultimo: mes } },
     }).eq("id", accountId);
-    console.log(`[relatorio-diario] mensal enviado mes=${mes} whatsapp=${env.whatsapp} email=${env.email}`);
-    return { mensal: true, enviado: true, mes, whatsapp: env.whatsapp, email: env.email };
+    console.log(`[relatorio-diario] mensal enviado mes=${mes} whatsapp=${env.whatsapp}`);
+    return { mensal: true, enviado: true, mes, whatsapp: env.whatsapp };
   } catch (e) {
     console.error("[relatorio-diario] mensal falhou", e);
     return { mensal: true, enviado: false, erro: e instanceof Error ? e.message : String(e) };
