@@ -201,18 +201,31 @@ async function destinatarios(admin: any, accountId: string): Promise<string[]> {
   return Array.isArray(lista) && lista.length ? lista.map(String) : DESTINATARIOS;
 }
 
-/** At 8h, once a day: e-mails yesterday's report. Never throws. */
+/**
+ * Day the 8h report of `hoje` covers, or null when none goes out
+ * (POPMED, 16/11): Tue–Fri → the day before; Monday → the previous Friday;
+ * Saturday and Sunday → no report.
+ */
+export function diaDoRelatorio(hoje: string): string | null {
+  const semana = new Date(`${hoje}T12:00:00Z`).getUTCDay(); // 0 = Sunday
+  if (semana === 0 || semana === 6) return null;
+  const voltar = semana === 1 ? 3 : 1;
+  return new Date(new Date(`${hoje}T12:00:00Z`).getTime() - voltar * 24 * 3600_000).toISOString().slice(0, 10);
+}
+
+/** At 8h on weekdays, once a day: the previous working day's report. Never throws. */
 // deno-lint-ignore no-explicit-any
 export async function talvezEnviarRelatorio(admin: any, accountId: string, enviar: Envio, agora = new Date()) {
   try {
     const hoje = diaSP(agora);
     const horaSP = (agora.getUTCHours() + 24 - SP_OFFSET_H) % 24;
     if (horaSP !== HORA) return null;
+    const ontem = diaDoRelatorio(hoje);
+    if (!ontem) return null;
     const { data: acc } = await admin.from("accounts").select("internal_attributes").eq("id", accountId).maybeSingle();
     // deno-lint-ignore no-explicit-any
     const ia = (acc?.internal_attributes ?? {}) as Record<string, any>;
     if (ia.relatorio_diario?.ultimo === hoje) return null;
-    const ontem = diaSP(new Date(inicioDoDiaSP(hoje).getTime() - 12 * 3600_000));
     const r = await montarRelatorio(admin, accountId, ontem);
     // WhatsApp is the main channel; the e-mail goes too when the Resend key works.
     const wa = await enviarPorWhatsApp(admin, accountId, textoDoRelatorio(r));
