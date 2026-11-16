@@ -108,11 +108,13 @@ async function enviarAlertaWhatsApp(admin: any, accountId: string, evo: { url: s
       await sendText({ ...evo, instanceName, number, text: texto });
       enviados++;
     } catch (e) {
-      erros.push(`${number.slice(-4)}: ${e instanceof Error ? e.message.slice(0, 120) : String(e)}`);
+      // deno-lint-ignore no-explicit-any
+      const corpo = String((e as any)?.body ?? "").slice(0, 200);
+      erros.push(`${number.slice(-4)}: ${e instanceof Error ? e.message.slice(0, 160) : String(e)}${corpo ? ` — ${corpo}` : ""}`);
     }
   }
   if (erros.length) console.error(`[whatsapp-health-check] alerta WhatsApp falhou: ${erros.join(" | ")}`);
-  return { ok: enviados > 0, enviados };
+  return { ok: enviados > 0, enviados, instancia: instanceName, ...(erros.length ? { erros } : {}) };
 }
 
 Deno.serve(async (req) => {
