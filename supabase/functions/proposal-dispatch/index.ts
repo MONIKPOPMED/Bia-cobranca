@@ -2,10 +2,11 @@
 //
 // Orquestra o envio da proposta de pagamento de um payment_arrangement:
 //   1. Se o arrangement não tem asaas_charge_id → chama asaas-create-charge
-//   2. Em paralelo: evolution-send-proposal + resend-send-proposal
+//   2. Envia a proposta pelo WhatsApp (evolution-send-proposal)
 //   3. Retorna status agregado
 //
-// Body: { arrangement_id: uuid, channels?: ('whatsapp'|'email')[] }
+// Body: { arrangement_id: uuid }
+// E-mail removido em 16/11 a pedido da POPMED (só mensagem no celular).
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.74.0";
 
@@ -22,11 +23,11 @@ Deno.serve(async (req) => {
   const admin = createClient(supabaseUrl, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
   const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
-  let body: { arrangement_id: string; channels?: ("whatsapp" | "email")[] };
+  let body: { arrangement_id: string };
   try { body = await req.json(); } catch { return j({ error: "bad json" }, 400); }
   if (!body.arrangement_id) return j({ error: "arrangement_id required" }, 400);
 
-  const channels = body.channels ?? ["whatsapp", "email"];
+  const channels = ["whatsapp"] as const;
 
   // 1. Garante charge Asaas
   const { data: arr } = await admin
@@ -50,12 +51,11 @@ Deno.serve(async (req) => {
     }
   }
 
-  // 2. Dispara WA + Email em paralelo
+  // 2. Envia pelo WhatsApp
   const results: Record<string, any> = {};
   await Promise.all(
     channels.map(async (ch) => {
-      const fn =
-        ch === "whatsapp" ? "evolution-send-proposal" : "resend-send-proposal";
+      const fn = "evolution-send-proposal";
       try {
         const res = await invokeFn(supabaseUrl, serviceKey, fn, {
           arrangement_id: arr.id,
